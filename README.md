@@ -14,4 +14,4 @@ Trace-Checking Signal-based Temporal Properties: A Model-Driven Approach. <br/>
 In 35th IEEE/ACM International Conference on Automated Software Engineering (ASE), 2020.<br/>
 Available online at https://orbilu.uni.lu/handle/10993/44159 
 
-We plan to release the source code of *SB-TemPsy*  under a FOSS license,  currently being reviewed by our legal team.
+We plan to release the source code of *SB-TemPsy* under a FOSS license (we expect to receive the final decision by our legal team in January 2021)
