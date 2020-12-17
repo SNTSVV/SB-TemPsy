@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<sBTemPsy:PropertiesBlock
+    xmi:version="2.0"
+    xmlns:xmi="http://www.omg.org/XMI"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xmlns:sBTemPsy="http://www.svv.lu/offline/SBTemPsy"
+    xsi:schemaLocation="http://www.svv.lu/offline/SBTemPsy ../../models/sbtempsy.ecore">
+  <properties
+      name="pDA">
+    <scope xsi:type="sBTemPsy:Globally"/>
+    <pattern
+        xsi:type="sBTemPsy:DataAssertion">
+      <dAssertions
+          daBehaviorSc1="">
+        <signal
+            name="OBSW347X"/>
+        <dAPred
+           rOp="&lt;">
+        	<value
+            	val="700"/>
+        </dAPred>    	
+      </dAssertions>
+    </pattern>
+  </properties>
+</sBTemPsy:PropertiesBlock>

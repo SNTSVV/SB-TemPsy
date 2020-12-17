@@ -1,0 +1,1384 @@
+import 'platform:/resource/lu.svv.offline/models/sbtempsy.ecore#/'
+import 'platform:/resource/lu.svv.offline/models/trace.ecore#/'
+import 'platform:/resource/lu.svv.offline/models/check.ecore#/'
+
+package check
+
+context Monitor
+
+------ ******************------
+------ Utility functions
+------ ******************------	
+
+def: getValue(element:trace::TraceElement,signal:sBTemPsy::Signal): sBTemPsy::Value=
+	element.signalValue->select(elem |  signal.id= elem.key.id) -> asSequence()->first().value
+	
+def: getInputTraceElements(trace:trace::Trace):OrderedSet(trace::TraceElement) = 
+trace.traceElements
+
+
+	------ ******************------
+------ PATTERNS
+------ ******************------	
+
+---------  Check Predicate  ---------
+def: checkPredicate(trace:OrderedSet(trace::TraceElement), element:trace::TraceElement, assertion:sBTemPsy::Assertion): Boolean =  
+(	   if assertion.dAPred.rOp = sBTemPsy::RelationalOperator::EQL then
+			 getValue(element, assertion.signal).val = assertion.dAPred.value.val 		
+		else 
+			if assertion.dAPred.rOp = sBTemPsy::RelationalOperator::LESS then
+				 getValue(element, assertion.signal).val < assertion.dAPred.value.val 		
+			else
+				if assertion.dAPred.rOp = sBTemPsy::RelationalOperator::LESSEQ then 
+					getValue(element, assertion.signal).val <= assertion.dAPred.value.val	
+				else
+					if assertion.dAPred.rOp = sBTemPsy::RelationalOperator::GRT then
+						 getValue(element, assertion.signal).val > assertion.dAPred.value.val 		
+					else
+						if assertion.dAPred.rOp = sBTemPsy::RelationalOperator::GRTEQ then
+							 getValue(element, assertion.signal).val >= assertion.dAPred.value.val	
+						else
+							if assertion.dAPred.rOp = sBTemPsy::RelationalOperator::DIFF then 
+								getValue(element, assertion.signal).val  <> assertion.dAPred.value.val
+							else
+								false
+							endif
+						endif
+					endif
+				endif
+			endif
+		endif
+)
+
+
+def: checkStatePredicate(trace:OrderedSet(trace::TraceElement), element:trace::TraceElement, statePat:sBTemPsy::StateAssertion): Boolean = 
+(		if statePat.dAPred.rOp = sBTemPsy::RelationalOperator::EQL then
+			getValue(element,statePat.signal).val = statePat.dAPred.value.val
+		else 
+			if statePat.dAPred.rOp = sBTemPsy::RelationalOperator::LESS then 
+				getValue(element,statePat.signal).val < statePat.dAPred.value.val	
+			else
+				if statePat.dAPred.rOp = sBTemPsy::RelationalOperator::LESSEQ then
+					 getValue(element,statePat.signal).val <= statePat.dAPred.value.val
+				else
+					if statePat.dAPred.rOp = sBTemPsy::RelationalOperator::GRT then 
+						getValue(element,statePat.signal).val > statePat.dAPred.value.val
+					else
+						if statePat.dAPred.rOp = sBTemPsy::RelationalOperator::GRTEQ then 
+							getValue(element,statePat.signal).val  >= statePat.dAPred.value.val
+						else
+							if statePat.dAPred.rOp = sBTemPsy::RelationalOperator::DIFF then 
+								getValue(element,statePat.signal).val  <> statePat.dAPred.value.val
+							else
+								false
+							endif
+						endif
+					endif
+				endif
+			endif
+		endif					
+)
+
+
+------------ Recursion over Assertions -----------
+
+def: checkCondition(trace:OrderedSet(trace::TraceElement), t:trace::TraceElement, daCondition:sBTemPsy::AbstractCondition): Boolean= 
+		if daCondition.oclIsTypeOf(sBTemPsy::OrCondition) then  
+			let orAssertion:sBTemPsy::OrCondition = daCondition.oclAsType(sBTemPsy::OrCondition), 
+				orDaCondOne:sBTemPsy::AbstractCondition = orAssertion.condition1,
+				orDaCondTwo:sBTemPsy::AbstractCondition = orAssertion.condition2
+			in
+				--checking on sub-conditions
+				(	checkCondition(trace, t, orDaCondOne) or
+					checkCondition(trace, t, orDaCondTwo)
+				)
+
+	else
+			if daCondition.oclIsTypeOf(sBTemPsy::AndCondition) then  
+				let andAssertion:sBTemPsy::AndCondition=daCondition.oclAsType(sBTemPsy::AndCondition), 
+					andDaCondOne:sBTemPsy::AbstractCondition= andAssertion.condition1,
+					andDaCondTwo:sBTemPsy::AbstractCondition= andAssertion.condition2
+				in
+				--checking on sub-conditions
+				(	checkCondition(trace, t, andDaCondOne) and
+					checkCondition(trace, t, andDaCondTwo)
+				)	
+			else 
+				-- if daCondition.oclIsTypeOf(sBTemPsy::Assertion) then
+					-- assertion case
+					let assertion:sBTemPsy::Assertion=daCondition.oclAsType(sBTemPsy::Assertion) in
+					checkPredicate(trace, t, assertion)
+			endif
+		endif						 
+
+---------  Data Assertion  ---------
+def: checkPatternDataAssertion(trace:OrderedSet(trace::TraceElement), pattern:sBTemPsy::Pattern, tl:Real,tu:Real):Boolean = 
+	if trace->isEmpty() then true -- if no records in the trace
+	else
+	 	let dataassertion:sBTemPsy::DataAssertion=pattern.oclAsType(sBTemPsy::DataAssertion) in				
+		
+		if dataassertion.oclIsTypeOf(sBTemPsy::EventAssertion) then 
+		( 	-- regular assertion 
+			let eventAssertion:sBTemPsy::EventAssertion = dataassertion.oclAsType(sBTemPsy::EventAssertion) in
+			
+			-- paper encoding
+			trace->forAll(t:trace::TraceElement | 
+						(t.generationTime >= tl and t.generationTime <=tu) 
+						implies 
+						(checkCondition(trace, t, eventAssertion.condition))															     
+						)
+		)				
+		else  --becomes
+			if dataassertion.oclIsTypeOf(sBTemPsy::StateAssertion) then 
+				let assertion:sBTemPsy::StateAssertion= pattern.oclAsType(sBTemPsy::StateAssertion), 
+				res:Tuple(secondclause:Boolean,existsSecond:Boolean,result:Boolean) =
+				trace -> iterate
+					(	elem:trace::TraceElement;
+						iter:Tuple(secondclause:Boolean,existsSecond:Boolean,result:Boolean) = 
+						Tuple{secondclause:Boolean = true,existsSecond:Boolean=false, result:Boolean=false} 
+						|	
+							if	(checkStatePredicate(trace,elem,assertion) and iter.secondclause and iter.existsSecond) then
+								Tuple{secondclause:Boolean = iter.secondclause,existsSecond:Boolean=iter.existsSecond, result:Boolean=true} 
+							else
+							 	if (checkStatePredicate(trace, elem, assertion)=false and iter.secondclause) then
+							 		Tuple{secondclause:Boolean = iter.secondclause,existsSecond:Boolean=true, result:Boolean=iter.result}
+							 	else
+							 		Tuple{secondclause:Boolean = false,existsSecond:Boolean=true, result:Boolean=iter.result}
+							 	endif
+							endif		
+					)
+				in
+				res.result
+			else 
+				false 
+			endif
+		endif	
+	endif
+
+---------  Spike Features  ---------	
+def: spikeAmplitude(value1:Real,value2:Real,value3:Real,
+	spikeFeaturesList:OrderedSet(sBTemPsy::SpikeFeature),indAmp:Integer):Boolean= 
+	 (	
+	 	if spikeFeaturesList->at(indAmp).sFPred.rOp = sBTemPsy::RelationalOperator::EQL then
+	 	 (value2-value1).abs().max((value2-value3).abs()) = spikeFeaturesList->at(indAmp).sFPred.value.val 
+		else
+			if spikeFeaturesList->at(indAmp).sFPred.rOp = sBTemPsy::RelationalOperator::GRT then
+			 (value2-value1).abs().max((value2-value3).abs()) > spikeFeaturesList->at(indAmp).sFPred.value.val
+			else
+				if spikeFeaturesList->at(indAmp).sFPred.rOp = sBTemPsy::RelationalOperator::LESS then
+					 (value2-value1).abs().max((value2-value3).abs()) < spikeFeaturesList->at(indAmp).sFPred.value.val 
+				else 
+					if spikeFeaturesList->at(indAmp).sFPred.rOp = sBTemPsy::RelationalOperator::GRTEQ then
+					 	(value2-value1).abs().max((value2-value3).abs()) >= spikeFeaturesList->at(indAmp).sFPred.value.val
+					else
+						if spikeFeaturesList->at(indAmp).sFPred.rOp = sBTemPsy::RelationalOperator::LESSEQ then
+						 (value2-value1).abs().max((value2-value3).abs()) <= spikeFeaturesList->at(indAmp).sFPred.value.val
+						else
+							if spikeFeaturesList->at(indAmp).sFPred.rOp = sBTemPsy::RelationalOperator::DIFF then
+							 (value2-value1).abs().max((value2-value3).abs()) <> spikeFeaturesList->at(indAmp).sFPred.value.val
+							else
+								false
+							endif
+						endif
+					endif
+				endif
+			endif
+		endif
+		
+	)
+	
+-- Define spike width note that t2 > t1 -- 
+def: spikeWidth(t1:Real,t2:Real,spikeFeaturesList:OrderedSet(sBTemPsy::SpikeFeature),indDur:Integer): Boolean= 
+	(	if spikeFeaturesList->at(indDur).sFPred.rOp = sBTemPsy::RelationalOperator::EQL then
+			 t2-t1 = spikeFeaturesList->at(indDur).sFPred.value.val
+		else
+			if spikeFeaturesList->at(indDur).sFPred.rOp = sBTemPsy::RelationalOperator::GRT then
+				 t2-t1  > spikeFeaturesList->at(indDur).sFPred.value.val
+			else
+				if spikeFeaturesList->at(indDur).sFPred.rOp = sBTemPsy::RelationalOperator::LESS then
+				 t2-t1  < spikeFeaturesList->at(indDur).sFPred.value.val
+				 else
+					if spikeFeaturesList->at(indDur).sFPred.rOp = sBTemPsy::RelationalOperator::GRTEQ then 
+						t2-t1  >= spikeFeaturesList->at(indDur).sFPred.value.val
+					else
+						if spikeFeaturesList->at(indDur).sFPred.rOp = sBTemPsy::RelationalOperator::LESSEQ then
+							 t2-t1  <= spikeFeaturesList->at(indDur).sFPred.value.val
+						else
+							if spikeFeaturesList->at(indDur).sFPred.rOp = sBTemPsy::RelationalOperator::DIFF then
+							 t2-t1  <> spikeFeaturesList->at(indDur).sFPred.value.val
+							else
+								false
+							endif
+						endif
+					endif
+				endif
+			endif
+		endif
+		
+	)
+					
+def: checkSpikeFeatures(subtrace:OrderedSet(trace::TraceElement), spikeFeaturesList:OrderedSet(sBTemPsy::SpikeFeature),t1:Real,t2:Real,t3:Real,t4:Real,v1:Real,v2:Real,v3:Real):Boolean=
+	let
+		indAmp:Integer=spikeFeaturesList.spkFName->indexOf(sBTemPsy::SpikeFeatureName::a),
+		indP:Integer=spikeFeaturesList.spkFName->indexOf(sBTemPsy::SpikeFeatureName::w) 
+	in
+	if spikeFeaturesList.spkFName->includes(sBTemPsy::SpikeFeatureName::a) and  spikeFeaturesList.spkFName->includes(sBTemPsy::SpikeFeatureName::w) then
+		spikeAmplitude(v1,v2,v3,spikeFeaturesList,indAmp) and spikeWidth(t2,t4,spikeFeaturesList,indP)
+	else
+		if spikeFeaturesList.spkFName->includes(sBTemPsy::SpikeFeatureName::a) then
+			spikeAmplitude(v1,v2,v3,spikeFeaturesList,indAmp)
+		else 
+		 	true
+		 endif 
+		and
+		if spikeFeaturesList.spkFName->includes(sBTemPsy::SpikeFeatureName::w) then
+				spikeWidth(t2,t4,spikeFeaturesList,indP) 		
+		else
+			true
+		 endif		
+	endif	
+
+
+def: checkMaxMinMaxSpike(subtrace:OrderedSet(trace::TraceElement),pattern:sBTemPsy::Pattern,tl:Real,tu:Real) :Boolean = 
+	let 
+	spkPattern:sBTemPsy::Spike=pattern.oclAsType(sBTemPsy::Spike),
+	signal:sBTemPsy::Signal = spkPattern.signal,
+	spikeFeaturesList:OrderedSet(sBTemPsy::SpikeFeature)=spkPattern.spkFeat,
+	initVal:sBTemPsy::Value=getValue(subtrace->at(0),signal),
+	maxminmax:Tuple(t1:Real, t2:Real, t3:Real, t4:Real, t5:Real, v1:Real,v2:Real,v3:Real,lastValue:sBTemPsy::Value,lastGenerationTime:Real,result:Boolean) =
+		subtrace -> iterate
+			(	elem:trace::TraceElement;
+				iter:Tuple(t1:Real, t2:Real, t3:Real, t4:Real, t5:Real, v1:Real,v2:Real,v3:Real, lastValue:sBTemPsy::Value,lastGenerationTime:Real,result:Boolean) = 
+				Tuple{t1:Real = -1, t2:Real = -1, t3:Real = -1, t4:Real = -1, t5:Real = -1,v1:Real = -1, v2:Real = -1, v3:Real = -1,lastValue:sBTemPsy::Value=initVal,lastGenerationTime:Real=-1,result:Boolean=false} 
+				|	
+				let
+					lastvalue:sBTemPsy::Value=getValue(elem,signal)
+				in 
+				if elem.generationTime>=tl and elem.generationTime<=tu then
+					if iter.t1<0 then
+						Tuple{t1:Real = elem.generationTime, t2:Real = -1, t3:Real = -1, t4:Real = -1, t5:Real = -1,v1:Real = -1, v2:Real = -1, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result} 
+					else
+						if iter.t2<0 then
+							-- the signal is going up
+							if iter.lastValue.val<=lastvalue.val then
+								Tuple{t1:Real = iter.t1, t2:Real = -1, t3:Real = -1, t4:Real = -1, t5:Real = -1,v1:Real = -1, v2:Real = -1, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result} 
+							else
+								Tuple{t1:Real = iter.t1, t2:Real = iter.lastGenerationTime, t3:Real = -1, t4:Real = -1, t5:Real = -1,v1:Real = iter.lastValue.val, v2:Real = -1, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result}
+							endif
+						else
+							if iter.t3<0 then
+								-- the signal is going down
+								if iter.lastValue.val>=lastvalue.val and elem.generationTime<>tu then
+									Tuple{t1:Real = iter.t1, t2:Real = iter.t2, t3:Real = -1, t4:Real = -1, t5:Real = -1,v1:Real = iter.v1, v2:Real = -1, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result} 
+								else
+									if elem.generationTime<>tu then
+										Tuple{t1:Real = iter.t1, t2:Real = iter.t2, t3:Real = iter.lastGenerationTime, t4:Real = -1, t5:Real = -1,v1:Real = iter.v1, v2:Real = iter.lastValue.val, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result} 
+									else
+										if checkSpikeFeatures(subtrace, spikeFeaturesList,iter.t1,iter.t2,iter.lastGenerationTime,elem.generationTime,iter.v1,iter.lastValue.val,lastvalue.val) then
+											-- Found match changing the result
+											Tuple{t1:Real = iter.t1, t2:Real = iter.t2, t3:Real = iter.lastGenerationTime, t4:Real = elem.generationTime, t5:Real = elem.generationTime,v1:Real = -1, v2:Real = -1, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=true} 
+										else
+											Tuple{t1:Real = iter.t3, t2:Real = iter.t4, t3:Real = iter.t5, t4:Real = -1, t5:Real = -1,v1:Real = iter.v3, v2:Real = iter.lastValue.val, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result} 
+										endif
+									endif
+								endif
+							else 
+								if iter.t4<0 then
+									-- the signal is going up
+									if iter.lastValue.val<=lastvalue.val and elem.generationTime<>tu then
+										Tuple{t1:Real = iter.t1, t2:Real = iter.t2, t3:Real = iter.t3, t4:Real = -1, t5:Real = -1,v1:Real = iter.v1, v2:Real = iter.v2, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result} 
+									else
+										if elem.generationTime<>tu then
+											-- a maximum is detected
+											Tuple{t1:Real = iter.t1, t2:Real = iter.t2, t3:Real = iter.t3, t4:Real = iter.lastGenerationTime, t5:Real = -1,v1:Real = iter.v1, v2:Real = iter.v2, v3:Real = iter.lastValue.val,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result}
+										else
+											if checkSpikeFeatures(subtrace, spikeFeaturesList,iter.t1,iter.t2,iter.t3,iter.lastGenerationTime,iter.v1,iter.v2,iter.lastValue.val) then
+												-- Found match changing the result
+												Tuple{t1:Real = iter.t1, t2:Real = iter.t2, t3:Real = iter.t3, t4:Real = iter.lastGenerationTime, t5:Real = elem.generationTime,v1:Real = -1, v2:Real = -1, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=true} 
+											else
+												Tuple{t1:Real = iter.t3, t2:Real = iter.t4, t3:Real = iter.t5, t4:Real = -1, t5:Real = -1,v1:Real = iter.v3, v2:Real = iter.lastValue.val, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result} 
+											endif
+										endif 
+										
+									endif
+								else
+									if iter.t5<0 then
+										-- the signal is going down
+										if iter.lastValue.val>=lastvalue.val and elem.generationTime<>tu then
+											Tuple{t1:Real = iter.t1, t2:Real = iter.t2, t3:Real = iter.t3, t4:Real = iter.t4, t5:Real = -1,v1:Real = iter.v1, v2:Real = iter.v2, v3:Real = iter.v3,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result} 
+										else
+											if checkSpikeFeatures(subtrace, spikeFeaturesList,iter.t1,iter.t2,iter.t3,iter.t4,iter.v1,iter.v2,iter.v3) then
+												-- Found match changing the result
+												Tuple{t1:Real = iter.t1, t2:Real = iter.t2, t3:Real = iter.t3, t4:Real = iter.t4, t5:Real = iter.lastGenerationTime,v1:Real = -1, v2:Real = -1, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=true} 
+											else
+												
+												Tuple{t1:Real = iter.t3, t2:Real = iter.t4, t3:Real = iter.t5, t4:Real = -1, t5:Real = -1,v1:Real = iter.v3, v2:Real = iter.lastValue.val, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result} 
+											endif
+											
+										endif
+									else
+										Tuple{t1:Real = iter.t1, t2:Real = iter.t2, t3:Real = iter.t3, t4:Real = iter.t4, t5:Real = -1,v1:Real = -1, v2:Real = -1, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result} 
+									endif
+								endif
+							endif
+	
+						endif 
+					endif
+				else
+					Tuple{t1:Real = iter.t1, t2:Real = iter.t2, t3:Real =iter.t3, t4:Real = iter.t4, t5:Real = iter.t5,v1:Real = -1, v2:Real = -1, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result}
+				endif
+
+			)
+		in			
+		maxminmax.result
+						
+def: checkMinMaxMinSpike(subtrace:OrderedSet(trace::TraceElement),pattern:sBTemPsy::Pattern,tl:Real,tu:Real) :Boolean = 
+	let 
+	spkPattern:sBTemPsy::Spike=pattern.oclAsType(sBTemPsy::Spike),
+	signal:sBTemPsy::Signal = spkPattern.signal,
+	spikeFeaturesList:OrderedSet(sBTemPsy::SpikeFeature)=spkPattern.spkFeat,
+	initVal:sBTemPsy::Value=getValue(subtrace->at(0),signal),
+	minmaxmin:Tuple(t1:Real, t2:Real, t3:Real, t4:Real, t5:Real, v1:Real,v2:Real,v3:Real,lastValue:sBTemPsy::Value,lastGenerationTime:Real,result:Boolean) =
+		subtrace -> iterate
+			(	elem:trace::TraceElement;
+				iter:Tuple(t1:Real, t2:Real, t3:Real, t4:Real, t5:Real, v1:Real,v2:Real,v3:Real, lastValue:sBTemPsy::Value,lastGenerationTime:Real,result:Boolean) = 
+				Tuple{t1:Real = -1, t2:Real = -1, t3:Real = -1, t4:Real = -1, t5:Real = -1,v1:Real = -1, v2:Real = -1, v3:Real = -1,lastValue:sBTemPsy::Value=initVal,lastGenerationTime:Real=-1,result:Boolean=false} 
+				|	
+				let
+					lastvalue:sBTemPsy::Value=getValue(elem,signal)
+				in 
+				if elem.generationTime>=tl and elem.generationTime<=tu then
+					if iter.t1<0 then
+						Tuple{t1:Real = elem.generationTime, t2:Real = -1, t3:Real = -1, t4:Real = -1, t5:Real = -1,v1:Real = -1, v2:Real = -1, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result} 
+					else
+						if iter.t2<0 then
+							-- the signal is going down
+							if iter.lastValue.val>=lastvalue.val then
+								Tuple{t1:Real = iter.t1, t2:Real = -1, t3:Real = -1, t4:Real = -1, t5:Real = -1,v1:Real = -1, v2:Real = -1, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result} 
+							else
+								-- a minimum is detected 
+								Tuple{t1:Real = iter.t1, t2:Real = iter.lastGenerationTime, t3:Real = -1, t4:Real = -1, t5:Real = -1,v1:Real = iter.lastValue.val, v2:Real = -1, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result}
+							endif
+						else
+							if iter.t3<0 then
+								-- the signal is going up
+								if iter.lastValue.val<=lastvalue.val and elem.generationTime<>tu then
+									Tuple{t1:Real = iter.t1, t2:Real = iter.t2, t3:Real = -1, t4:Real = -1, t5:Real = -1,v1:Real = iter.v1, v2:Real = -1, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result} 
+								else
+									if elem.generationTime<>tu then
+										Tuple{t1:Real = iter.t1, t2:Real = iter.t2, t3:Real = iter.lastGenerationTime, t4:Real = -1, t5:Real = -1,v1:Real = iter.v1, v2:Real = iter.lastValue.val, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result} 
+									else
+										if checkSpikeFeatures(subtrace, spikeFeaturesList,iter.t1,iter.t2,iter.lastGenerationTime,elem.generationTime,iter.v1,iter.lastValue.val,lastvalue.val) then
+											-- Found match changing the result
+											Tuple{t1:Real = iter.t1, t2:Real = iter.t2, t3:Real = iter.lastGenerationTime, t4:Real = elem.generationTime, t5:Real = elem.generationTime,v1:Real = -1, v2:Real = -1, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=true} 
+										else
+											Tuple{t1:Real = iter.t3, t2:Real = iter.t4, t3:Real = iter.t5, t4:Real = -1, t5:Real = -1,v1:Real = iter.v3, v2:Real = iter.lastValue.val, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result} 
+										endif
+									endif
+								endif
+							else 
+								if iter.t4<0 then
+									-- the signal is going down
+									if iter.lastValue.val>=lastvalue.val and elem.generationTime<>tu then
+										Tuple{t1:Real = iter.t1, t2:Real = iter.t2, t3:Real = iter.t3, t4:Real = -1, t5:Real = -1,v1:Real = iter.v1, v2:Real = iter.v2, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result} 
+									else
+										if elem.generationTime<>tu then
+											-- a minimum is detected
+											Tuple{t1:Real = iter.t1, t2:Real = iter.t2, t3:Real = iter.t3, t4:Real = iter.lastGenerationTime, t5:Real = -1,v1:Real = iter.v1, v2:Real = iter.v2, v3:Real = iter.lastValue.val,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result}
+										else
+											if checkSpikeFeatures(subtrace, spikeFeaturesList,iter.t1,iter.t2,iter.t3,iter.lastGenerationTime,iter.v1,iter.v2,iter.lastValue.val) then
+												-- Found match changing the result
+												Tuple{t1:Real = iter.t1, t2:Real = iter.t2, t3:Real = iter.t3, t4:Real = iter.lastGenerationTime, t5:Real = elem.generationTime,v1:Real = -1, v2:Real = -1, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=true} 
+											else
+												Tuple{t1:Real = iter.t3, t2:Real = iter.t4, t3:Real = iter.t5, t4:Real = -1, t5:Real = -1,v1:Real = iter.v3, v2:Real = iter.lastValue.val, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result} 
+											endif
+										endif 
+									endif
+								else
+									if iter.t5<0 then
+										-- the signal is going up
+										if iter.lastValue.val<=lastvalue.val and elem.generationTime<>tu then
+											Tuple{t1:Real = iter.t1, t2:Real = iter.t2, t3:Real = iter.t3, t4:Real = iter.t4, t5:Real = -1,v1:Real = iter.v1, v2:Real = iter.v2, v3:Real = iter.v3,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result} 
+										else
+											if checkSpikeFeatures(subtrace, spikeFeaturesList,iter.t1,iter.t2,iter.t3,iter.t4,iter.v1,iter.v2,iter.v3) then
+												-- Found match changing the result
+												Tuple{t1:Real = iter.t1, t2:Real = iter.t2, t3:Real = iter.t3, t4:Real = iter.t4, t5:Real = iter.lastGenerationTime,v1:Real = -1, v2:Real = -1, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=true} 
+											else
+												
+												Tuple{t1:Real = iter.t3, t2:Real = iter.t4, t3:Real = iter.t5, t4:Real = -1, t5:Real = -1,v1:Real = iter.v3, v2:Real = iter.lastValue.val, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result} 
+											endif
+											
+										endif
+									else
+										Tuple{t1:Real = iter.t1, t2:Real = iter.t2, t3:Real = iter.t3, t4:Real = iter.t4, t5:Real = -1,v1:Real = -1, v2:Real = -1, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result} 
+									endif
+								endif
+							endif
+	
+						endif 
+					endif
+				else
+					Tuple{t1:Real = iter.t1, t2:Real = iter.t2, t3:Real =iter.t3, t4:Real = iter.t4, t5:Real = iter.t5,v1:Real = -1, v2:Real = -1, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result}
+				endif
+
+			)
+		in			
+		minmaxmin.result			
+---------  Spike  ---------	
+def: checkPatternSpike(subtrace:OrderedSet(trace::TraceElement), pattern:sBTemPsy::Pattern,tl:Real,tu:Real):Boolean = 
+if subtrace->isEmpty() then true -- if no records in the trace
+else
+
+	if subtrace->isEmpty() then true -- if no records in the trace
+	else
+		if checkMaxMinMaxSpike(subtrace,pattern,tl,tu) then
+			true
+		else 
+			if checkMinMaxMinSpike(subtrace,pattern,tl,tu) then
+				true
+			else
+				false
+			endif
+		endif
+	endif
+endif
+
+
+--								
+def: peakToPeakAmp(subtrace:OrderedSet(trace::TraceElement),  oscFeaturesList:OrderedSet(sBTemPsy::OscillationsFeature),indAmp:Integer,v1:Real,v2:Real,v3:Real):Boolean=
+	if oscFeaturesList->at(indAmp).oscFPred.rOp = sBTemPsy::RelationalOperator::LESS then
+		(v1-v2).abs()<oscFeaturesList->at(indAmp).oscFPred.value.val and
+							 (v2-v3).abs()<oscFeaturesList->at(indAmp).oscFPred.value.val	
+	else
+		if oscFeaturesList->at(indAmp).oscFPred.rOp = sBTemPsy::RelationalOperator::EQL then
+			(v1-v2).abs()=oscFeaturesList->at(indAmp).oscFPred.value.val and
+										 (v2-v3).abs()=oscFeaturesList->at(indAmp).oscFPred.value.val					 
+		else
+			if oscFeaturesList->at(indAmp).oscFPred.rOp = sBTemPsy::RelationalOperator::GRT then
+				(v1-v2).abs()>oscFeaturesList->at(indAmp).oscFPred.value.val and
+								 (v2-v3).abs()>oscFeaturesList->at(indAmp).oscFPred.value.val	
+			else
+				if oscFeaturesList->at(indAmp).oscFPred.rOp = sBTemPsy::RelationalOperator::GRTEQ then
+					(v1-v2).abs()>=oscFeaturesList->at(indAmp).oscFPred.value.val and
+											 (v2-v3).abs()>=oscFeaturesList->at(indAmp).oscFPred.value.val	
+				else 
+					if oscFeaturesList->at(indAmp).oscFPred.rOp = sBTemPsy::RelationalOperator::LESSEQ then
+					 (v1-v2).abs()<=oscFeaturesList->at(indAmp).oscFPred.value.val and
+											 (v2-v3).abs()<=oscFeaturesList->at(indAmp).oscFPred.value.val	
+					else
+						if oscFeaturesList->at(indAmp).oscFPred.rOp = sBTemPsy::RelationalOperator::DIFF then
+								(v1-v2).abs() <> oscFeaturesList->at(indAmp).oscFPred.value.val and
+											 (v2-v3).abs()<>oscFeaturesList->at(indAmp).oscFPred.value.val	
+						else
+							false
+						endif
+					endif
+				endif
+			endif
+		endif
+	endif
+
+	
+
+				
+				
+def: period(subtrace:OrderedSet(trace::TraceElement), oscFeaturesList:OrderedSet(sBTemPsy::OscillationsFeature),indP:Integer,t1:Real,t2:Real,t3:Real,t4:Real):Boolean=
+	if oscFeaturesList->at(indP).oscFPred.rOp = sBTemPsy::RelationalOperator::LESS then
+		t4-t2<oscFeaturesList->at(indP).oscFPred.value.val 
+	else
+		if oscFeaturesList->at(indP).oscFPred.rOp = sBTemPsy::RelationalOperator::EQL then
+			(t2-t4).abs()=oscFeaturesList->at(indP).oscFPred.value.val
+		else				 
+			if oscFeaturesList->at(indP).oscFPred.rOp = sBTemPsy::RelationalOperator::GRT then
+				(t2-t4).abs()>oscFeaturesList->at(indP).oscFPred.value.val	
+			else
+				if oscFeaturesList->at(indP).oscFPred.rOp = sBTemPsy::RelationalOperator::GRTEQ then
+					(t2-t4).abs()>=oscFeaturesList->at(indP).oscFPred.value.val	
+				else
+					if oscFeaturesList->at(indP).oscFPred.rOp = sBTemPsy::RelationalOperator::LESSEQ then
+								(t2-t4).abs()<=oscFeaturesList->at(indP).oscFPred.value.val	
+					else
+						if oscFeaturesList->at(indP).oscFPred.rOp = sBTemPsy::RelationalOperator::DIFF then
+									(t2-t4).abs() <> oscFeaturesList->at(indP).oscFPred.value.val
+						else
+							false
+						endif
+					endif
+				endif	
+			endif		
+		endif	
+	endif
+
+
+
+def: checkOscillationFeatures(subtrace:OrderedSet(trace::TraceElement),  oscFeaturesList:OrderedSet(sBTemPsy::OscillationsFeature),t1:Real,t2:Real,t3:Real,t4:Real,v1:Real,v2:Real,v3:Real):Boolean=
+	let
+		indAmp:Integer=oscFeaturesList.oscFName->indexOf(sBTemPsy::OscillationsFeatureName::a),
+		indP:Integer=oscFeaturesList.oscFName->indexOf(sBTemPsy::OscillationsFeatureName::w)
+	in
+	if oscFeaturesList.oscFName->includes(sBTemPsy::OscillationsFeatureName::a)  and oscFeaturesList.oscFName->includes(sBTemPsy::OscillationsFeatureName::w) then
+		peakToPeakAmp(subtrace,oscFeaturesList,indAmp,v1,v2,v3) and period(subtrace,oscFeaturesList,indP,t1,t2,t3,t4) 
+	else
+		if oscFeaturesList.oscFName->includes(sBTemPsy::OscillationsFeatureName::a) then
+			peakToPeakAmp(subtrace,oscFeaturesList,indAmp,v1,v2,v3)
+		else 
+		 	true
+		 endif 
+		and
+		if oscFeaturesList.oscFName->includes(sBTemPsy::OscillationsFeatureName::w) then
+				period(subtrace,oscFeaturesList,indP,t1,t2,t3,t4) 		
+		else
+			true
+		 endif
+	endif
+
+
+def: checkLocalMaxMinMaxOscillation(subtrace:OrderedSet(trace::TraceElement),pattern:sBTemPsy::Pattern,tl:Real,tu:Real) :Boolean = 
+	let 
+	oscPattern:sBTemPsy::Oscillation=pattern.oclAsType(sBTemPsy::Oscillation),
+	signal:sBTemPsy::Signal = oscPattern.signal,
+	oscFeaturesList:OrderedSet(sBTemPsy::OscillationsFeature)=oscPattern.oscFeat,
+	initVal:sBTemPsy::Value=getValue(subtrace->at(0),signal),
+	maxminmax:Tuple(t1:Real, t2:Real, t3:Real, t4:Real, t5:Real, v1:Real,v2:Real,v3:Real,lastValue:sBTemPsy::Value,lastGenerationTime:Real,result:Boolean) =
+		subtrace -> iterate
+			(	elem:trace::TraceElement;
+				iter:Tuple(t1:Real, t2:Real, t3:Real, t4:Real, t5:Real, v1:Real,v2:Real,v3:Real, lastValue:sBTemPsy::Value,lastGenerationTime:Real,result:Boolean) = 
+				Tuple{t1:Real = -1, t2:Real = -1, t3:Real = -1, t4:Real = -1, t5:Real = -1,v1:Real = -1, v2:Real = -1, v3:Real = -1,lastValue:sBTemPsy::Value=initVal,lastGenerationTime:Real=-1,result:Boolean=false} 
+				|	
+				let
+					lastvalue:sBTemPsy::Value=getValue(elem,signal)
+				in 
+				if elem.generationTime>=tl and elem.generationTime<=tu then
+					if iter.t1<0 then
+						Tuple{t1:Real = elem.generationTime, t2:Real = -1, t3:Real = -1, t4:Real = -1, t5:Real = -1,v1:Real = -1, v2:Real = -1, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result} 
+					else
+						if iter.t2<0 then
+							-- the signal is going up
+							if iter.lastValue.val<lastvalue.val then
+								Tuple{t1:Real = iter.t1, t2:Real = -1, t3:Real = -1, t4:Real = -1, t5:Real = -1,v1:Real = -1, v2:Real = -1, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result} 
+							else
+								if iter.lastValue.val=lastvalue.val then
+									Tuple{t1:Real = -1, t2:Real = -1, t3:Real = -1, t4:Real = -1, t5:Real = -1,v1:Real = -1, v2:Real = -1, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result} 
+								else
+									-- a maximum is detected 
+									Tuple{t1:Real = iter.t1, t2:Real = iter.lastGenerationTime, t3:Real = -1, t4:Real = -1, t5:Real = -1,v1:Real = iter.lastValue.val, v2:Real = -1, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result}
+								endif 
+							endif
+						else
+							if iter.t3<0 then
+								-- the signal is going down
+								if iter.lastValue.val>lastvalue.val then
+									Tuple{t1:Real = iter.t1, t2:Real = iter.t2, t3:Real = -1, t4:Real = -1, t5:Real = -1,v1:Real = iter.v1, v2:Real = -1, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result} 
+								else
+									if iter.lastValue.val=lastvalue.val then
+										Tuple{t1:Real = -1, t2:Real = -1, t3:Real = -1, t4:Real = -1, t5:Real = -1,v1:Real = -1, v2:Real = -1, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result} 
+									else
+										-- a minimum is detected
+										Tuple{t1:Real = iter.t1, t2:Real = iter.t2, t3:Real = iter.lastGenerationTime, t4:Real = -1, t5:Real = -1,v1:Real = iter.v1, v2:Real = iter.lastValue.val, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result} 
+									endif
+								endif
+							else 
+								if iter.t4<0 then
+									-- the signal is going up
+									if iter.lastValue.val<lastvalue.val then
+										Tuple{t1:Real = iter.t1, t2:Real = iter.t2, t3:Real = iter.t3, t4:Real = -1, t5:Real = -1,v1:Real = iter.v1, v2:Real = iter.v2, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result} 
+									else
+										if iter.lastValue.val=lastvalue.val then
+											Tuple{t1:Real = -1, t2:Real = -1, t3:Real = -1, t4:Real = -1, t5:Real = -1,v1:Real = -1, v2:Real = -1, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result} 
+										else
+											if elem.generationTime<>tu then
+												-- a maximum is detected
+												Tuple{t1:Real = iter.t1, t2:Real = iter.t2, t3:Real = iter.t3, t4:Real = iter.lastGenerationTime, t5:Real = -1,v1:Real = iter.v1, v2:Real = iter.v2, v3:Real = iter.lastValue.val,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result}
+											else
+												if checkOscillationFeatures(subtrace, oscFeaturesList,iter.t1,iter.t2,iter.t3,iter.lastGenerationTime,iter.v1,iter.v2,iter.lastValue.val) then
+													-- Found match changing the result
+													Tuple{t1:Real = iter.t1, t2:Real = iter.t2, t3:Real = iter.t3, t4:Real = iter.lastGenerationTime, t5:Real = elem.generationTime,v1:Real = -1, v2:Real = -1, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=true} 
+												else
+													Tuple{t1:Real = iter.t3, t2:Real = iter.t4, t3:Real = iter.t5, t4:Real = -1, t5:Real = -1,v1:Real = iter.v3, v2:Real = iter.lastValue.val, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result} 
+												endif
+											endif 
+										endif
+									endif
+								else
+									if iter.t5<0 then
+										-- the signal is going down
+										if iter.lastValue.val>lastvalue.val and elem.generationTime<>tu then
+											Tuple{t1:Real = iter.t1, t2:Real = iter.t2, t3:Real = iter.t3, t4:Real = iter.t4, t5:Real = -1,v1:Real = iter.v1, v2:Real = iter.v2, v3:Real = iter.v3,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result} 
+										else
+											if checkOscillationFeatures(subtrace, oscFeaturesList,iter.t1,iter.t2,iter.t3,iter.t4,iter.v1,iter.v2,iter.v3) then
+												-- Found match changing the result
+												Tuple{t1:Real = iter.t1, t2:Real = iter.t2, t3:Real = iter.t3, t4:Real = iter.t4, t5:Real = iter.lastGenerationTime,v1:Real = -1, v2:Real = -1, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=true} 
+											else
+												
+												Tuple{t1:Real = iter.t3, t2:Real = iter.t4, t3:Real = iter.t5, t4:Real = -1, t5:Real = -1,v1:Real = iter.v3, v2:Real = iter.lastValue.val, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result} 
+											endif
+											
+										endif
+									else
+										Tuple{t1:Real = iter.t1, t2:Real = iter.t2, t3:Real = iter.t3, t4:Real = iter.t4, t5:Real = -1,v1:Real = -1, v2:Real = -1, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result} 
+									endif
+								endif
+							endif
+	
+						endif 
+					endif
+				else
+					Tuple{t1:Real = iter.t1, t2:Real = iter.t2, t3:Real =iter.t3, t4:Real = iter.t4, t5:Real = iter.t5,v1:Real = -1, v2:Real = -1, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result}
+				endif
+
+			)
+		in			
+		maxminmax.result
+
+
+
+def: checkLocalMinMaxMinOscillation(subtrace:OrderedSet(trace::TraceElement),pattern:sBTemPsy::Pattern,tl:Real,tu:Real) :Boolean = 
+	let 
+	oscPattern:sBTemPsy::Oscillation=pattern.oclAsType(sBTemPsy::Oscillation),
+	signal:sBTemPsy::Signal = oscPattern.signal,
+	oscFeaturesList:OrderedSet(sBTemPsy::OscillationsFeature)=oscPattern.oscFeat,
+	initVal:sBTemPsy::Value=getValue(subtrace->at(0),signal),
+	minmaxmin:Tuple(t1:Real, t2:Real, t3:Real, t4:Real, t5:Real, v1:Real,v2:Real,v3:Real,lastValue:sBTemPsy::Value,lastGenerationTime:Real,result:Boolean) =
+		subtrace -> iterate
+			(	elem:trace::TraceElement;
+				iter:Tuple(t1:Real, t2:Real, t3:Real, t4:Real, t5:Real, v1:Real,v2:Real,v3:Real, lastValue:sBTemPsy::Value,lastGenerationTime:Real,result:Boolean) = 
+				Tuple{t1:Real = -1, t2:Real = -1, t3:Real = -1, t4:Real = -1, t5:Real = -1,v1:Real = -1, v2:Real = -1, v3:Real = -1,lastValue:sBTemPsy::Value=initVal,lastGenerationTime:Real=-1,result:Boolean=false} 
+				|	
+				let
+					lastvalue:sBTemPsy::Value=getValue(elem,signal)
+				in 
+				if elem.generationTime>=tl and elem.generationTime<=tu then
+					if iter.t1<0 then
+						Tuple{t1:Real = elem.generationTime, t2:Real = -1, t3:Real = -1, t4:Real = -1, t5:Real = -1,v1:Real = -1, v2:Real = -1, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result} 
+					else
+						if iter.t2<0 then
+							-- the signal is going down
+							if iter.lastValue.val>lastvalue.val then
+								Tuple{t1:Real = iter.t1, t2:Real = -1, t3:Real = -1, t4:Real = -1, t5:Real = -1,v1:Real = -1, v2:Real = -1, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result} 
+							else
+								if iter.lastValue.val=lastvalue.val then
+									Tuple{t1:Real = -1, t2:Real = -1, t3:Real = -1, t4:Real = -1, t5:Real = -1,v1:Real = -1, v2:Real = -1, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result} 
+								else
+									-- a minimum is detected 
+									Tuple{t1:Real = iter.t1, t2:Real = iter.lastGenerationTime, t3:Real = -1, t4:Real = -1, t5:Real = -1,v1:Real = iter.lastValue.val, v2:Real = -1, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result}
+								endif 
+							endif
+						else
+							if iter.t3<0 then
+								-- the signal is going up
+								if iter.lastValue.val<lastvalue.val then
+									Tuple{t1:Real = iter.t1, t2:Real = iter.t2, t3:Real = -1, t4:Real = -1, t5:Real = -1,v1:Real = iter.v1, v2:Real = -1, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result} 
+								else
+									if iter.lastValue.val=lastvalue.val then
+										Tuple{t1:Real = -1, t2:Real = -1, t3:Real = -1, t4:Real = -1, t5:Real = -1,v1:Real = -1, v2:Real = -1, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result} 
+									else
+										-- a maximum is detected
+										Tuple{t1:Real = iter.t1, t2:Real = iter.t2, t3:Real = iter.lastGenerationTime, t4:Real = -1, t5:Real = -1,v1:Real = iter.v1, v2:Real = iter.lastValue.val, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result} 
+									endif
+								endif
+							else 
+								if iter.t4<0 then
+									-- the signal is down up
+									if iter.lastValue.val>lastvalue.val then
+										Tuple{t1:Real = iter.t1, t2:Real = iter.t2, t3:Real = iter.t3, t4:Real = -1, t5:Real = -1,v1:Real = iter.v1, v2:Real = iter.v2, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result} 
+									else
+										if iter.lastValue.val=lastvalue.val then
+											Tuple{t1:Real = -1, t2:Real = -1, t3:Real = -1, t4:Real = -1, t5:Real = -1,v1:Real = -1, v2:Real = -1, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result} 
+										else
+											if elem.generationTime<>tu then
+												-- a minimum is detected
+												Tuple{t1:Real = iter.t1, t2:Real = iter.t2, t3:Real = iter.t3, t4:Real = iter.lastGenerationTime, t5:Real = -1,v1:Real = iter.v1, v2:Real = iter.v2, v3:Real = iter.lastValue.val,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result}
+											else
+												if checkOscillationFeatures(subtrace, oscFeaturesList,iter.t1,iter.t2,iter.t3,iter.lastGenerationTime,iter.v1,iter.v2,iter.lastValue.val) then
+													-- Found match changing the result
+													Tuple{t1:Real = iter.t1, t2:Real = iter.t2, t3:Real = iter.t3, t4:Real = iter.lastGenerationTime, t5:Real = elem.generationTime,v1:Real = -1, v2:Real = -1, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=true} 
+												else
+													Tuple{t1:Real = iter.t3, t2:Real = iter.t4, t3:Real = iter.t5, t4:Real = -1, t5:Real = -1,v1:Real = iter.v3, v2:Real = iter.lastValue.val, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result} 
+												endif
+											endif 
+										endif
+									endif
+								else
+									if iter.t5<0 then
+										-- the signal is going up
+										if iter.lastValue.val>lastvalue.val and elem.generationTime<>tu then
+											Tuple{t1:Real = iter.t1, t2:Real = iter.t2, t3:Real = iter.t3, t4:Real = iter.t4, t5:Real = -1,v1:Real = iter.v1, v2:Real = iter.v2, v3:Real = iter.v3,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result} 
+										else
+											if checkOscillationFeatures(subtrace, oscFeaturesList,iter.t1,iter.t2,iter.t3,iter.t4,iter.v1,iter.v2,iter.v3) then
+												-- Found match changing the result
+												Tuple{t1:Real = iter.t1, t2:Real = iter.t2, t3:Real = iter.t3, t4:Real = iter.t4, t5:Real = iter.lastGenerationTime,v1:Real = -1, v2:Real = -1, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=true} 
+											else
+												
+												Tuple{t1:Real = iter.t3, t2:Real = iter.t4, t3:Real = iter.t5, t4:Real = -1, t5:Real = -1,v1:Real = iter.v3, v2:Real = iter.lastValue.val, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result} 
+											endif
+											
+										endif
+									else
+										Tuple{t1:Real = iter.t1, t2:Real = iter.t2, t3:Real = iter.t3, t4:Real = iter.t4, t5:Real = -1,v1:Real = -1, v2:Real = -1, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result} 
+									endif
+								endif
+							endif
+	
+						endif 
+					endif
+				else
+					Tuple{t1:Real = iter.t1, t2:Real = iter.t2, t3:Real =iter.t3, t4:Real = iter.t4, t5:Real = iter.t5,v1:Real = -1, v2:Real = -1, v3:Real = -1,lastValue:sBTemPsy::Value=lastvalue,lastGenerationTime:Real=elem.generationTime,result:Boolean=iter.result}
+				endif
+
+			)
+		in			
+		minmaxmin.result
+
+
+def: checkPatternOscillations(subtrace:OrderedSet(trace::TraceElement), pattern:sBTemPsy::Pattern,tl:Real,tu:Real):Boolean = 
+	if subtrace->isEmpty() then true -- if no records in the trace
+	else
+		if checkLocalMaxMinMaxOscillation(subtrace,pattern,tl,tu) then
+			true
+		else 
+			if checkLocalMinMaxMinOscillation(subtrace,pattern,tl,tu) then
+				true
+			else
+				false
+			endif
+		endif
+	endif
+
+
+
+---------  Rise time pattern  ---------
+def: checkPatternRiseTime(subtrace:OrderedSet(trace::TraceElement), pattern:sBTemPsy::Pattern,tl:Real,tu:Real):Boolean = 
+	let 
+		rtPattern:sBTemPsy::Rise=pattern.oclAsType(sBTemPsy::Rise),
+		signal:sBTemPsy::Signal = rtPattern.signal,
+		--behavior:sBTemPsy::PatternType=rtPattern.rfBehavior, 
+		targetVal:Real=rtPattern.targetValue.val,
+		initVal:sBTemPsy::Value=getValue(subtrace->at(0),signal)
+	in
+	
+	--	monotonicity constraint (if required)
+	if rtPattern.rfMonotonicity = sBTemPsy::MonotonicityType::MONOTONICITY then 
+	
+		let result:Tuple(result:Boolean,lowerThanv:Boolean,monotonicity:Boolean,lastValue:sBTemPsy::Value,isInitVal:Boolean) =
+	subtrace -> iterate
+		(	elem:trace::TraceElement;
+			iter:Tuple(result:Boolean,lowerThanv:Boolean,monotonicity:Boolean,lastValue:sBTemPsy::Value,isInitVal:Boolean) = 
+			Tuple{result:Boolean=false,lowerThanv:Boolean=true,monotonicity:Boolean=true,lastValue:sBTemPsy::Value=initVal,isInitVal:Boolean=true} 
+			|	
+				let
+					currentVal:sBTemPsy::Value=getValue(elem,signal)
+				in 
+				
+				if elem.generationTime>=tl and elem.generationTime<=tu and iter.result=false then
+					if currentVal.val >= targetVal then
+						if iter.lowerThanv and iter.monotonicity then 
+							Tuple{result:Boolean=true,lowerThanv:Boolean=iter.lowerThanv,monotonicity:Boolean=iter.monotonicity,lastValue:sBTemPsy::Value=currentVal,isInitVal:Boolean=iter.isInitVal}
+						else
+							iter
+						endif
+					else
+						if iter.isInitVal then
+							Tuple{result:Boolean=iter.result,lowerThanv:Boolean=iter.lowerThanv,monotonicity:Boolean=iter.monotonicity,lastValue:sBTemPsy::Value=currentVal,isInitVal:Boolean=false}
+						else
+							if iter.lastValue.val < currentVal.val then
+								Tuple{result:Boolean=iter.result,lowerThanv:Boolean=iter.lowerThanv,monotonicity:Boolean=iter.monotonicity,lastValue:sBTemPsy::Value=currentVal,isInitVal:Boolean=iter.isInitVal}
+							else
+								Tuple{result:Boolean=iter.result,lowerThanv:Boolean=iter.lowerThanv,monotonicity:Boolean=false,lastValue:sBTemPsy::Value=currentVal,isInitVal:Boolean=iter.isInitVal}								
+							endif
+						endif
+					endif
+				else
+					iter
+				endif
+			) in
+		result.result
+		
+	else
+		let result:Tuple(result:Boolean,lowerThanv:Boolean,monotonicity:Boolean,lastValue:sBTemPsy::Value,isInitVal:Boolean) =
+	subtrace -> iterate
+		(	elem:trace::TraceElement;
+			iter:Tuple(result:Boolean,lowerThanv:Boolean,monotonicity:Boolean,lastValue:sBTemPsy::Value,isInitVal:Boolean) = 
+			Tuple{result:Boolean=false,lowerThanv:Boolean=true,monotonicity:Boolean=true,lastValue:sBTemPsy::Value=initVal,isInitVal:Boolean=true} 
+			|	
+				let
+					currentVal:sBTemPsy::Value=getValue(elem,signal)
+				in 
+				
+				if elem.generationTime>=tl and elem.generationTime<=tu and iter.result=false then
+					if currentVal.val >= targetVal then
+						if iter.lowerThanv and iter.monotonicity then 
+							Tuple{result:Boolean=true,lowerThanv:Boolean=iter.lowerThanv,monotonicity:Boolean=iter.monotonicity,lastValue:sBTemPsy::Value=currentVal,isInitVal:Boolean=iter.isInitVal}
+						else
+							iter
+						endif
+					else
+						if iter.isInitVal then
+							Tuple{result:Boolean=iter.result,lowerThanv:Boolean=iter.lowerThanv,monotonicity:Boolean=iter.monotonicity,lastValue:sBTemPsy::Value=currentVal,isInitVal:Boolean=false}
+						else
+							Tuple{result:Boolean=iter.result,lowerThanv:Boolean=iter.lowerThanv,monotonicity:Boolean=iter.monotonicity,lastValue:sBTemPsy::Value=currentVal,isInitVal:Boolean=iter.isInitVal}
+						endif
+					endif
+				else
+					iter
+				endif
+			) in
+		result.result
+	endif		
+	
+	 
+		
+---------  Fall time pattern  ---------
+def: checkPatternFallTime(subtrace:OrderedSet(trace::TraceElement), pattern:sBTemPsy::Pattern, tl:Real,tu:Real):Boolean = 
+	let 
+		rtPattern:sBTemPsy::Fall=pattern.oclAsType(sBTemPsy::Fall),
+		signal:sBTemPsy::Signal = rtPattern.signal,
+		--behavior:sBTemPsy::PatternType=rtPattern.rfBehavior, 
+		targetVal:Real=rtPattern.targetValue.val,
+		initVal:sBTemPsy::Value=getValue(subtrace->at(0),signal)
+	in
+		--	monotonicity constraint (if required)
+	if rtPattern.rfMonotonicity = sBTemPsy::MonotonicityType::MONOTONICITY then 
+	
+		let result:Tuple(result:Boolean,lowerThanv:Boolean,monotonicity:Boolean,lastValue:sBTemPsy::Value,isInitVal:Boolean) =
+	subtrace -> iterate
+		(	elem:trace::TraceElement;
+			iter:Tuple(result:Boolean,lowerThanv:Boolean,monotonicity:Boolean,lastValue:sBTemPsy::Value,isInitVal:Boolean) = 
+			Tuple{result:Boolean=false,lowerThanv:Boolean=true,monotonicity:Boolean=true,lastValue:sBTemPsy::Value=initVal,isInitVal:Boolean=true} 
+			|	
+				let
+					currentVal:sBTemPsy::Value=getValue(elem,signal)
+				in 
+				
+				if elem.generationTime>=tl and elem.generationTime<=tu and iter.result=false then
+					if currentVal.val <= targetVal then
+						if iter.lowerThanv and iter.monotonicity then 
+							Tuple{result:Boolean=true,lowerThanv:Boolean=iter.lowerThanv,monotonicity:Boolean=iter.monotonicity,lastValue:sBTemPsy::Value=currentVal,isInitVal:Boolean=iter.isInitVal}
+						else
+							iter
+						endif
+					else
+						if iter.isInitVal then
+							Tuple{result:Boolean=iter.result,lowerThanv:Boolean=iter.lowerThanv,monotonicity:Boolean=iter.monotonicity,lastValue:sBTemPsy::Value=currentVal,isInitVal:Boolean=false}
+						else
+							if iter.lastValue.val > currentVal.val then
+								Tuple{result:Boolean=iter.result,lowerThanv:Boolean=iter.lowerThanv,monotonicity:Boolean=iter.monotonicity,lastValue:sBTemPsy::Value=currentVal,isInitVal:Boolean=iter.isInitVal}
+							else
+								Tuple{result:Boolean=iter.result,lowerThanv:Boolean=iter.lowerThanv,monotonicity:Boolean=false,lastValue:sBTemPsy::Value=currentVal,isInitVal:Boolean=iter.isInitVal}								
+							endif
+						endif
+					endif
+				else
+					iter
+				endif
+			) in
+		result.result
+		
+	else
+		let result:Tuple(result:Boolean,lowerThanv:Boolean,monotonicity:Boolean,lastValue:sBTemPsy::Value,isInitVal:Boolean) =
+	subtrace -> iterate
+		(	elem:trace::TraceElement;
+			iter:Tuple(result:Boolean,lowerThanv:Boolean,monotonicity:Boolean,lastValue:sBTemPsy::Value,isInitVal:Boolean) = 
+			Tuple{result:Boolean=false,lowerThanv:Boolean=true,monotonicity:Boolean=true,lastValue:sBTemPsy::Value=initVal,isInitVal:Boolean=true} 
+			|	
+				let
+					currentVal:sBTemPsy::Value=getValue(elem,signal)
+				in 
+				
+				if elem.generationTime>=tl and elem.generationTime<=tu and iter.result=false then
+					if currentVal.val <= targetVal then
+						if iter.lowerThanv and iter.monotonicity then 
+							Tuple{result:Boolean=true,lowerThanv:Boolean=iter.lowerThanv,monotonicity:Boolean=iter.monotonicity,lastValue:sBTemPsy::Value=currentVal,isInitVal:Boolean=iter.isInitVal}
+						else
+							iter
+						endif
+					else
+						if iter.isInitVal then
+							Tuple{result:Boolean=iter.result,lowerThanv:Boolean=iter.lowerThanv,monotonicity:Boolean=iter.monotonicity,lastValue:sBTemPsy::Value=currentVal,isInitVal:Boolean=false}
+						else
+							Tuple{result:Boolean=iter.result,lowerThanv:Boolean=iter.lowerThanv,monotonicity:Boolean=iter.monotonicity,lastValue:sBTemPsy::Value=currentVal,isInitVal:Boolean=iter.isInitVal}
+						endif
+					endif
+				else
+					iter
+				endif
+			) in
+		result.result
+	endif		
+	
+	
+
+	
+------ Overshoot pattern ------
+def: checkPatternOvershoot(subtrace:OrderedSet(trace::TraceElement), pattern:sBTemPsy::Pattern,tl:Real,tu:Real):Boolean = 
+	let 
+		oshPattern:sBTemPsy::Overshoot=pattern.oclAsType(sBTemPsy::Overshoot),
+		signal:sBTemPsy::Signal = oshPattern.signal,
+		--behavior:sBTemPsy::PatternType=oshPattern.ouBehavior, 
+		targetVal:Real=oshPattern.targetValue.val,
+		maxVal:Real=oshPattern.maximumValue.val,		
+		initVal:sBTemPsy::Value=getValue(subtrace->at(0),signal)
+	in
+		--	monotonicity constraint (if required)
+	if oshPattern.ouMonotonicity = sBTemPsy::MonotonicityType::MONOTONICITY then 
+		let result:Tuple(result:Boolean,upperThanv:Boolean,monotonicity:Boolean,lastValue:sBTemPsy::Value,isInitVal:Boolean) =
+	subtrace -> iterate
+		(	elem:trace::TraceElement;
+			iter:Tuple(result:Boolean,upperThanv:Boolean,monotonicity:Boolean,lastValue:sBTemPsy::Value,isInitVal:Boolean) = 
+			Tuple{result:Boolean=false,upperThanv:Boolean=false,monotonicity:Boolean=true,lastValue:sBTemPsy::Value=initVal,isInitVal:Boolean=true} 
+			|	
+				let
+					currentVal:sBTemPsy::Value=getValue(elem,signal)
+				in 
+				
+				if elem.generationTime>=tl and elem.generationTime<=tu  then
+					if iter.upperThanv then
+						if currentVal.val<= targetVal+maxVal then
+							Tuple{result:Boolean=iter.result,upperThanv:Boolean=iter.upperThanv,monotonicity:Boolean=iter.monotonicity,lastValue:sBTemPsy::Value=currentVal,isInitVal:Boolean=iter.isInitVal}
+						else
+							Tuple{result:Boolean=false,upperThanv:Boolean=iter.upperThanv,monotonicity:Boolean=iter.monotonicity,lastValue:sBTemPsy::Value=currentVal,isInitVal:Boolean=iter.isInitVal}	
+						endif
+					else
+						if currentVal.val >= targetVal then
+							if iter.monotonicity then 
+								Tuple{result:Boolean=true,upperThanv:Boolean=true,monotonicity:Boolean=iter.monotonicity,lastValue:sBTemPsy::Value=currentVal,isInitVal:Boolean=iter.isInitVal}
+							else
+								iter
+							endif
+						else
+							if iter.isInitVal then
+								Tuple{result:Boolean=iter.result,upperThanv:Boolean=iter.upperThanv,monotonicity:Boolean=iter.monotonicity,lastValue:sBTemPsy::Value=currentVal,isInitVal:Boolean=false}
+							else
+								if iter.lastValue.val < currentVal.val then
+									Tuple{result:Boolean=iter.result,upperThanv:Boolean=iter.upperThanv,monotonicity:Boolean=iter.monotonicity,lastValue:sBTemPsy::Value=currentVal,isInitVal:Boolean=iter.isInitVal}
+								else
+									Tuple{result:Boolean=iter.result,upperThanv:Boolean=iter.upperThanv,monotonicity:Boolean=false,lastValue:sBTemPsy::Value=currentVal,isInitVal:Boolean=iter.isInitVal}								
+								endif 
+							endif
+						endif
+					endif
+				else
+					iter
+				endif
+			) in
+		result.result
+	else
+		let result:Tuple(result:Boolean,upperThanv:Boolean,monotonicity:Boolean,lastValue:sBTemPsy::Value,isInitVal:Boolean) =
+	subtrace -> iterate
+		(	elem:trace::TraceElement;
+			iter:Tuple(result:Boolean,upperThanv:Boolean,monotonicity:Boolean,lastValue:sBTemPsy::Value,isInitVal:Boolean) = 
+			Tuple{result:Boolean=false,upperThanv:Boolean=false,monotonicity:Boolean=true,lastValue:sBTemPsy::Value=initVal,isInitVal:Boolean=true} 
+			|	
+				let
+					currentVal:sBTemPsy::Value=getValue(elem,signal)
+				in 
+				
+				if elem.generationTime>=tl and elem.generationTime<=tu then
+					if iter.upperThanv then
+						if currentVal.val<= targetVal+maxVal then
+							Tuple{result:Boolean=iter.result,upperThanv:Boolean=iter.upperThanv,monotonicity:Boolean=iter.monotonicity,lastValue:sBTemPsy::Value=currentVal,isInitVal:Boolean=iter.isInitVal}
+						else
+							Tuple{result:Boolean=false,upperThanv:Boolean=iter.upperThanv,monotonicity:Boolean=iter.monotonicity,lastValue:sBTemPsy::Value=currentVal,isInitVal:Boolean=iter.isInitVal}	
+						endif
+					else
+						if currentVal.val >= targetVal then
+							if iter.monotonicity then 
+								Tuple{result:Boolean=true,upperThanv:Boolean=true,monotonicity:Boolean=iter.monotonicity,lastValue:sBTemPsy::Value=currentVal,isInitVal:Boolean=iter.isInitVal}
+							else
+								iter
+							endif
+						else
+							if iter.isInitVal then
+								Tuple{result:Boolean=iter.result,upperThanv:Boolean=iter.upperThanv,monotonicity:Boolean=iter.monotonicity,lastValue:sBTemPsy::Value=currentVal,isInitVal:Boolean=false}
+							else
+								iter
+							endif
+						endif
+					endif
+				else
+					iter
+				endif
+			) in
+		result.result
+	endif
+
+
+		
+------ Undershoot pattern ------
+def: checkPatternUndershoot(subtrace:OrderedSet(trace::TraceElement), pattern:sBTemPsy::Pattern,tl:Real,tu:Real):Boolean = 
+	let 
+		ushPattern:sBTemPsy::Undershoot=pattern.oclAsType(sBTemPsy::Undershoot),
+		signal:sBTemPsy::Signal = ushPattern.signal,
+		targetVal:Real=ushPattern.targetValue.val,
+		maxVal:Real=ushPattern.maximumValue.val,		
+		initVal:sBTemPsy::Value=getValue(subtrace->at(0),signal)
+	in
+		--	monotonicity constraint (if required)
+	if ushPattern.ouMonotonicity = sBTemPsy::MonotonicityType::MONOTONICITY then 
+		let result:Tuple(result:Boolean,lowerThanv:Boolean,monotonicity:Boolean,lastValue:sBTemPsy::Value,isInitVal:Boolean) =
+	subtrace -> iterate
+		(	elem:trace::TraceElement;
+			iter:Tuple(result:Boolean,lowerThanv:Boolean,monotonicity:Boolean,lastValue:sBTemPsy::Value,isInitVal:Boolean) = 
+			Tuple{result:Boolean=false,lowerThanv:Boolean=false,monotonicity:Boolean=true,lastValue:sBTemPsy::Value=initVal,isInitVal:Boolean=true} 
+			|	
+				let
+					currentVal:sBTemPsy::Value=getValue(elem,signal)
+				in 
+				
+				if elem.generationTime>=tl and elem.generationTime<=tu then
+					if iter.lowerThanv then
+						if currentVal.val>= targetVal-maxVal then
+							Tuple{result:Boolean=iter.result,lowerThanv:Boolean=iter.lowerThanv,monotonicity:Boolean=iter.monotonicity,lastValue:sBTemPsy::Value=currentVal,isInitVal:Boolean=iter.isInitVal}
+						else
+							Tuple{result:Boolean=false,lowerThanv:Boolean=iter.lowerThanv,monotonicity:Boolean=iter.monotonicity,lastValue:sBTemPsy::Value=currentVal,isInitVal:Boolean=iter.isInitVal}	
+						endif
+					else
+						if currentVal.val <= targetVal then
+							if iter.monotonicity then 
+								Tuple{result:Boolean=true,lowerThanv:Boolean=true,monotonicity:Boolean=iter.monotonicity,lastValue:sBTemPsy::Value=currentVal,isInitVal:Boolean=iter.isInitVal}
+							else
+								iter
+							endif
+						else
+							if iter.isInitVal then
+								Tuple{result:Boolean=iter.result,lowerThanv:Boolean=iter.lowerThanv,monotonicity:Boolean=iter.monotonicity,lastValue:sBTemPsy::Value=currentVal,isInitVal:Boolean=false}
+							else
+								if iter.lastValue.val > currentVal.val then
+									Tuple{result:Boolean=iter.result,lowerThanv:Boolean=iter.lowerThanv,monotonicity:Boolean=iter.monotonicity,lastValue:sBTemPsy::Value=currentVal,isInitVal:Boolean=iter.isInitVal}
+								else
+									Tuple{result:Boolean=iter.result,lowerThanv:Boolean=iter.lowerThanv,monotonicity:Boolean=false,lastValue:sBTemPsy::Value=currentVal,isInitVal:Boolean=iter.isInitVal}								
+								endif 
+							endif
+						endif
+					endif
+				else
+					iter
+				endif
+			) in
+		result.result
+	else
+		let result:Tuple(result:Boolean,lowerThanv:Boolean,monotonicity:Boolean,lastValue:sBTemPsy::Value,isInitVal:Boolean) =
+	subtrace -> iterate
+		(	elem:trace::TraceElement;
+			iter:Tuple(result:Boolean,lowerThanv:Boolean,monotonicity:Boolean,lastValue:sBTemPsy::Value,isInitVal:Boolean) = 
+			Tuple{result:Boolean=false,lowerThanv:Boolean=false,monotonicity:Boolean=true,lastValue:sBTemPsy::Value=initVal,isInitVal:Boolean=true} 
+			|	
+				let
+					currentVal:sBTemPsy::Value=getValue(elem,signal)
+				in 
+				
+				if elem.generationTime>=tl and elem.generationTime<=tu then
+					if iter.lowerThanv then
+						if currentVal.val>= targetVal-maxVal then
+							Tuple{result:Boolean=iter.result,lowerThanv:Boolean=iter.lowerThanv,monotonicity:Boolean=iter.monotonicity,lastValue:sBTemPsy::Value=currentVal,isInitVal:Boolean=iter.isInitVal}
+						else
+							Tuple{result:Boolean=false,lowerThanv:Boolean=iter.lowerThanv,monotonicity:Boolean=iter.monotonicity,lastValue:sBTemPsy::Value=currentVal,isInitVal:Boolean=iter.isInitVal}	
+						endif
+					else
+						if currentVal.val <= targetVal  then
+							if iter.monotonicity then 
+								Tuple{result:Boolean=true,lowerThanv:Boolean=true,monotonicity:Boolean=iter.monotonicity,lastValue:sBTemPsy::Value=currentVal,isInitVal:Boolean=iter.isInitVal}
+							else
+								iter
+							endif
+						else
+							if iter.isInitVal then
+								Tuple{result:Boolean=iter.result,lowerThanv:Boolean=iter.lowerThanv,monotonicity:Boolean=iter.monotonicity,lastValue:sBTemPsy::Value=currentVal,isInitVal:Boolean=false}
+							else
+								iter
+							endif
+						endif
+					endif
+				else
+					iter
+				endif
+			) in
+		result.result
+	endif
+	
+	
+
+			
+
+def: checkSinglePattern(trace:OrderedSet(trace::TraceElement), pattern:sBTemPsy::Pattern, firsttime:Real, lasttime:Real): Boolean=
+
+	if pattern.oclIsTypeOf(sBTemPsy::StateAssertion) then
+		 checkPatternDataAssertion(trace, pattern,firsttime,lasttime)
+	else
+		if pattern.oclIsTypeOf(sBTemPsy::StateAssertion) then
+			checkPatternDataAssertion(trace, pattern,firsttime,lasttime)
+		else
+			if pattern.oclIsTypeOf(sBTemPsy::EventAssertion) then 
+				checkPatternDataAssertion(trace, pattern,firsttime,lasttime)
+			else 
+				if pattern.oclIsTypeOf(sBTemPsy::Spike) then
+					 checkPatternSpike(trace, pattern,firsttime,lasttime)
+				else 
+					if pattern.oclIsTypeOf(sBTemPsy::Oscillation) then 
+						checkPatternOscillations(trace, pattern,firsttime,lasttime)
+					else
+						if pattern.oclIsTypeOf(sBTemPsy::Rise)  then
+						 	checkPatternRiseTime(trace, pattern,firsttime,lasttime)
+						else
+							if pattern.oclIsTypeOf(sBTemPsy::Fall) then
+							 	checkPatternFallTime(trace, pattern,firsttime,lasttime)
+							else
+								if pattern.oclIsTypeOf(sBTemPsy::Overshoot) then
+								 	checkPatternOvershoot(trace, pattern,firsttime,lasttime)
+								else
+									if pattern.oclIsTypeOf(sBTemPsy::Undershoot) then
+										checkPatternUndershoot(trace, pattern,firsttime,lasttime)
+									else
+										false
+									endif
+								endif
+							endif
+						endif
+					endif
+				endif
+			endif
+		endif 
+	endif
+	
+
+------ Order relationship between signals pattern ------
+
+def: checkPatternOrderRelationshipship(trace:OrderedSet(trace::TraceElement), pattern:sBTemPsy::Pattern,tl:Real,tu:Real): Boolean = 
+	let 
+	orderPattern:sBTemPsy::Order=pattern.oclAsType(sBTemPsy::Order),
+	causePattern:sBTemPsy::Pattern=orderPattern.cause,
+	causeEffectDistance:sBTemPsy::TimeDistance=orderPattern.causeEffectDistance,
+	causeEffectDistanceCompOp:sBTemPsy::ComparingOperator=orderPattern.causeEffectDistance.comparingOperator,
+	causeEffectDistanceBoundary:Real=orderPattern.causeEffectDistance.boundary.val,
+	effectPatternsList:OrderedSet(sBTemPsy::Pattern)=orderPattern.effect.effectsPList
+	in
+	Set{1..trace->size()-1}->forAll(i | 
+		if tl <= (trace->at(i)).generationTime and (trace->at(i)).generationTime <=tu  then
+			Set{i..trace->size()-1} ->
+				forAll(j | 
+					if checkSinglePattern(trace,causePattern,(trace->at(i)).generationTime,(trace->at(j)).generationTime) 
+					and  (trace->at(j)).generationTime <=tu
+					then
+						effectPatternsList->forAll(p|
+							Set{j..trace->size()-1} -> 
+								exists(h |
+									if causeEffectDistance <>null then 
+										(	
+											( causeEffectDistanceCompOp  = sBTemPsy::ComparingOperator::ATMOST and  (trace->at(h)).generationTime-(trace->at(j)).generationTime <= causeEffectDistanceBoundary) or
+											( causeEffectDistanceCompOp  = sBTemPsy::ComparingOperator::ATLEAST and  (trace->at(h)).generationTime-(trace->at(j)).generationTime >= causeEffectDistanceBoundary) or
+											( causeEffectDistanceCompOp  = sBTemPsy::ComparingOperator::EXACTLY and  (trace->at(h)).generationTime-(trace->at(j)).generationTime = causeEffectDistanceBoundary) 
+										)
+									else
+										true
+									endif
+									and
+									Set{h..trace->size()-1} ->
+										exists(k |
+											checkSinglePattern(trace,p,(trace->at(h)).generationTime,(trace->at(k)).generationTime) 
+										)
+								)
+						)
+					else
+						true
+					endif
+				)
+			
+		else
+			true
+		endif
+	) 
+
+	
+def: checkPattern(trace:OrderedSet(trace::TraceElement), pattern:sBTemPsy::Pattern, firsttime:Real, lasttime:Real): Boolean=
+	if pattern.oclIsTypeOf(sBTemPsy::Order) then
+		checkPatternOrderRelationshipship(trace, pattern,firsttime,lasttime)
+	else
+		checkSinglePattern(trace, pattern,firsttime,lasttime)
+	endif
+
+------ ******************------
+------ SCOPES
+------ ******************------	
+def: globally(trace:OrderedSet(trace::TraceElement), property:sBTemPsy::Property): Boolean=
+	let tl:Real=trace->first().generationTime, tu:Real=trace->last().generationTime in 
+	checkPattern(trace, property.pattern, tl, tu)
+	
+	
+def: before(trace:OrderedSet(trace::TraceElement), property:sBTemPsy::Property): Boolean=
+	let tl:Real=trace->first().generationTime, tu:Real=trace->last().generationTime, 
+		beforeScope:sBTemPsy::Before=property.scope.oclAsType(sBTemPsy::Before) in 
+	
+	if  (beforeScope.boundary.absoluteB <> null) then
+		tl <= beforeScope.boundary.absoluteB.val and beforeScope.boundary.absoluteB.val <= tu and
+		checkPattern(trace, property.pattern, tl, beforeScope.boundary.absoluteB.val)
+	else
+		if beforeScope.boundary.eventB <> null then 
+	 		(
+	 			trace -> forAll(t1| tl < t1.generationTime  and t1.generationTime <tu
+	 				and trace -> forAll(t2|	
+		 				( t1.generationTime <t2.generationTime and 
+		 							t2.generationTime <= tu and
+									checkPattern(trace, beforeScope.boundary.eventB, t1.generationTime, t2.generationTime) 
+						) 
+						implies 
+						(	trace -> exists(t3| tl <=t3.generationTime and t3.generationTime<=t1.generationTime and
+								trace -> exists(t4| t3.generationTime < t4.generationTime and t4.generationTime <=t1.generationTime and 	
+									checkPattern(trace, property.pattern, t3.generationTime, t4.generationTime))
+							)	
+						)
+					)
+				)	
+	 		)
+	 		else
+	 			false
+	 		endif
+		
+	endif	
+
+def: at(trace:OrderedSet(trace::TraceElement), property:sBTemPsy::Property):Boolean=
+	(	let punctualScope:sBTemPsy::PunctualScope=property.scope.oclAsType(sBTemPsy::PunctualScope), 
+			tl:Real=trace->first().generationTime, tu:Real=trace->last().generationTime in 
+		
+		tl <= punctualScope.absolute.absoluteB.val and punctualScope.absolute.absoluteB.val <= tu and
+							checkPattern(trace, property.pattern, punctualScope.absolute.absoluteB.val,punctualScope.absolute.absoluteB.val)
+	)
+
+	
+		
+def: after(trace:OrderedSet(trace::TraceElement), property:sBTemPsy::Property):Boolean=
+	let tl:Real=trace->first().generationTime, tu:Real=trace->last().generationTime, 
+	 	afterScope:sBTemPsy::After=property.scope.oclAsType(sBTemPsy::After) in 	
+	if  (afterScope.boundary.absoluteB <> null) then 
+			(
+				tl <= afterScope.boundary.absoluteB.val and afterScope.boundary.absoluteB.val <= tu and
+				checkPattern(trace, property.pattern, afterScope.boundary.absoluteB.val,tu)												
+			)
+	else		
+	(	
+		if (afterScope.boundary.eventB <> null) then 
+ 		 (
+ 			trace -> forAll(t1 | tl <= t1.generationTime and t1.generationTime <= tu  and
+ 				trace -> forAll( t2|	
+		 			(  t1.generationTime < t2.generationTime and t2.generationTime <= tu and 
+									checkPattern(trace, afterScope.boundary.eventB, t1.generationTime, t2.generationTime) ) 
+					implies 
+					(	trace -> exists(t3 | t2.generationTime <=t3.generationTime and t3.generationTime <=tu and 
+							trace -> exists(t4| 
+								( 	t3.generationTime < t4.generationTime and t4.generationTime <=tu and 	
+									checkPattern(trace, property.pattern, t3.generationTime, t4.generationTime)
+								)
+							)
+						)	
+					)
+				)
+			)	
+ 		)
+ 		else
+ 			false
+ 		endif
+	)
+	endif
+					
+		
+def: betweenand(trace:OrderedSet(trace::TraceElement), property:sBTemPsy::Property):Boolean=
+ 	( 	let betweenAndScope:sBTemPsy::BetweenAnd=property.scope.oclAsType(sBTemPsy::BetweenAnd),  	
+ 			tl:Real=trace->first().generationTime, tu:Real=trace->last().generationTime in 
+				
+		if betweenAndScope.boundary1.absoluteB <> null then
+			tl <= betweenAndScope.boundary1.absoluteB.val and betweenAndScope.boundary1.absoluteB.val<= betweenAndScope.boundary2.absoluteB.val and betweenAndScope.boundary2.absoluteB.val <= tu and
+			checkPattern(trace, property.pattern, betweenAndScope.boundary1.absoluteB.val, betweenAndScope.boundary2.absoluteB.val)					 
+		else 
+		(
+			if betweenAndScope.boundary1.eventB <> null and betweenAndScope.boundary2.eventB <> null then 
+			(  
+				trace -> forAll(t1 | tl <=t1.generationTime and t1.generationTime <=tu and
+					trace -> forAll(t2 | t1.generationTime < t2.generationTime and t2.generationTime <=tu and
+						trace ->forAll(t3 | t2.generationTime < t3.generationTime and t3.generationTime <=tu and
+							trace ->forAll( t4 |t3.generationTime < t4.generationTime and t4.generationTime <=tu and
+								(	checkPattern(trace, betweenAndScope.boundary1.eventB, t1.generationTime, t2.generationTime) and 
+									checkPattern(trace, betweenAndScope.boundary2.eventB, t3.generationTime, t4.generationTime)
+								) 
+							implies
+								checkPattern(trace, betweenAndScope.boundary2.eventB, t2.generationTime, t3.generationTime)
+							)
+						)
+					)
+				)
+			)
+			else
+				false
+			endif
+		)
+		endif			
+			
+	)
+	 
+
+------ ******************------
+------ MAIN
+------ ******************------	
+
+------------ Recursion over properties -----------
+def: checkSimpleProperty(trace:OrderedSet(trace::TraceElement), property:sBTemPsy::Property): Boolean= 
+	if property.scope.oclIsTypeOf(sBTemPsy::Globally) then
+		globally(trace,property)
+	else
+		if property.scope.oclIsTypeOf(sBTemPsy::Before) then 
+			before(trace,property)
+		else
+			if property.scope.oclIsTypeOf(sBTemPsy::After) then  
+				after(trace,property) 
+			else
+				if property.scope.oclIsTypeOf(sBTemPsy::BetweenAnd) then
+					betweenand(trace,property)
+				else
+					if property.scope.oclIsTypeOf(sBTemPsy::PunctualScope) then 
+						at(trace,property)
+					 else
+					 	true
+					 endif
+				endif
+			endif
+		endif
+	endif
+
+	
+
+def: checkProperty(trace:OrderedSet(trace::TraceElement), property:sBTemPsy::AbstractProperty): Boolean=
+( 
+	if trace->isEmpty() then true -- if no records in the trace
+	else
+	if property.oclIsTypeOf(sBTemPsy::OrProperty) then  
+			let orProperty:sBTemPsy::OrProperty = property.oclAsType(sBTemPsy::OrProperty), 
+				orProOne:sBTemPsy::AbstractProperty = orProperty.property1,
+				orProTwo:sBTemPsy::AbstractProperty = orProperty.property2
+			in
+			checkProperty(trace,orProOne) or 
+			checkProperty(trace, orProTwo)
+			
+		else
+			if property.oclIsTypeOf(sBTemPsy::AndProperty) then  
+				let andProperty:sBTemPsy::AndProperty = property.oclAsType(sBTemPsy::AndProperty), 
+				andProOne:sBTemPsy::AbstractProperty = andProperty.property1,
+				andProTwo:sBTemPsy::AbstractProperty = andProperty.property2
+			in
+			checkProperty(trace,andProOne) and 
+			checkProperty(trace, andProTwo)		 	
+			
+		else  
+				-- negation	
+				if property.oclIsTypeOf(sBTemPsy::NotProperty) then 
+					let negProp:sBTemPsy::NotProperty = property.oclAsType(sBTemPsy::NotProperty) in 
+						checkProperty(trace,negProp.property)=false					
+				else -- one simple property case
+		let simpleProperty:sBTemPsy::Property=property.oclAsType(sBTemPsy::Property) in
+			checkSimpleProperty(trace,simpleProperty)
+			
+
+	endif
+	endif
+	endif
+	endif
+	
+)					 		
+			
+endpackage

@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<sBTemPsy:PropertiesBlock
+    xmi:version="2.0"
+    xmlns:xmi="http://www.omg.org/XMI"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xmlns:sBTemPsy="http://www.svv.lu/offline/SBTemPsy"
+    xsi:schemaLocation="http://www.svv.lu/offline/SBTemPsy ../../models/sbtempsy.ecore">
+  <properties
+      xsi:type="sBTemPsy:Property"
+       name="p2">
+    <scope xsi:type="sBTemPsy:Globally"/>
+    <pattern
+        xsi:type="sBTemPsy:Order">
+      <cause
+          xsi:type="sBTemPsy:EventAssertion">
+        <condition
+            xsi:type="sBTemPsy:Assertion">
+          <signal
+              id="s1"/>
+          <dAPred
+           	rOp="&lt;=">
+        	<value
+            	val="3"/>
+       	  </dAPred>  
+        </condition>
+      </cause>
+      <causeEffectDistance
+          comparingOperator="exactly">
+        <boundary
+            val="2.0"/>
+      </causeEffectDistance>
+      <effect>
+        <effectsPList
+            xsi:type="sBTemPsy:EventAssertion">
+          <condition
+              xsi:type="sBTemPsy:Assertion">
+            <signal
+                id="s2"/>
+            <dAPred
+           	rOp="&lt;=">
+        	<value
+            	val="2"/>
+       	  </dAPred>  
+          </condition>
+        </effectsPList>
+      </effect>
+    </pattern>
+  </properties>
+</sBTemPsy:PropertiesBlock>

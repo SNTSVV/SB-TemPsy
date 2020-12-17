@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<sBTemPsy:PropertiesBlock
+    xmi:version="2.0"
+    xmlns:xmi="http://www.omg.org/XMI"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xmlns:sBTemPsy="http://www.svv.lu/offline/SBTemPsy"
+    xsi:schemaLocation="http://www.svv.lu/offline/SBTemPsy ../../models/sbtempsy.ecore">
+  <properties
+      xsi:type="sBTemPsy:Property"
+      name="p11">
+    <scope xsi:type="sBTemPsy:Globally"/>
+    <pattern
+        xsi:type="sBTemPsy:Spike"
+        occSpk="1">
+      <signal
+          id="OBSW341Is"/>
+      <spkFeat spkFName="amplitude">
+     <sFPred
+        rOp="&lt;=">
+        	<value
+            	val="39"/>
+        </sFPred>    	
+      </spkFeat>
+      <spkFeat spkFName="width">
+        <sFPred
+        rOp="==">
+        	<value
+            	val="3"/>
+        </sFPred> 
+      </spkFeat>
+    </pattern>
+  </properties>
+</sBTemPsy:PropertiesBlock>

@@ -1,0 +1,14 @@
+models/check.genmodel
+src/lu/svv/offline/check/**/
+src/lu/svv/offline/check/
+src/lu/svv/offline/sBTemPsy/**/
+src/lu/svv/offline/sBTemPsy/
+src/lu/svv/offline/trace/**/
+src/lu/svv/offline/trace/
+target/*
+target/**/
+bin/**/
+bin/*
+target/*
+/target/
+/bin/

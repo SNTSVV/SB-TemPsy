@@ -1,0 +1,839 @@
+import 'platform:/resource/lu.svv.offline/models/sbtempsy.ecore#/'
+import 'platform:/resource/lu.svv.offline/models/trace.ecore#/'
+import 'platform:/resource/lu.svv.offline/models/check.ecore#/'
+
+package check
+
+context Monitor
+
+
+
+------ ******************------
+------ Utility functions
+------ ******************------	
+
+def: getValue(element:trace::TraceElement,signal:sBTemPsy::Signal): sBTemPsy::Value=
+	element.signalValue->select(elem |  signal.id= elem.key.id) -> asSequence()->first().value
+	
+def: getInputTraceElements(trace:trace::Trace):OrderedSet(trace::TraceElement) = 
+trace.traceElements
+
+
+def: getListOfIndexes(a:Integer,b:Integer):Sequence(Integer)=						
+Sequence{a..b}->select(i:Integer| i>=a and i<=b )
+
+
+
+
+---------  Is minimum  ---------
+def: isMinimum(subtrace:OrderedSet(trace::TraceElement), min:trace::TraceElement, firstTimeInInterval:Real, lastTimeInInterval:Real, signal:sBTemPsy::Signal):Boolean = 
+		subtrace -> exists(elem | elem.generationTime=min.generationTime and getValue(elem, signal).val=getValue(min,signal).val)
+	and
+		(subtrace->
+			select(elem | 
+				elem.generationTime >= firstTimeInInterval and elem.generationTime <= lastTimeInInterval).signalValue 
+				-> select( elem | elem.key.id=signal.id).value.val
+				->min()=getValue(min,signal).val
+		) 
+	and 
+		(subtrace ->forAll(elem1, elem2 | 
+				(firstTimeInInterval<= elem1.generationTime and elem1.generationTime <= elem2.generationTime 
+					and elem2.generationTime <=  min.generationTime and min.generationTime<=lastTimeInInterval 
+				) 
+				implies 
+				getValue(elem1,signal).val >= getValue(elem2,signal).val
+			)
+		) 
+	and 
+		(subtrace -> forAll(elem1, elem2 |  
+				(firstTimeInInterval<=min.generationTime and min.generationTime <= elem1.generationTime  
+					and elem1.generationTime <= elem2.generationTime and elem2.generationTime <= lastTimeInInterval 
+				) 
+				implies 
+				getValue(elem1,signal).val <= getValue(elem2,signal).val
+			)	
+		) 	
+
+---------  Is maximum  ---------
+def: isLocalMaximum(subtrace:OrderedSet(trace::TraceElement), max:trace::TraceElement, firstTimeInInterval:Real, lastTimeInInterval:Real, signal:sBTemPsy::Signal):Boolean = 
+		subtrace -> exists(elem | elem.generationTime=max.generationTime and getValue(elem,signal).val=getValue(max,signal).val)
+	and
+		(subtrace->
+			select(elem | 
+				elem.generationTime >= firstTimeInInterval and elem.generationTime <= lastTimeInInterval).signalValue
+				-> select(elem |elem.key.id=signal.id).value.val				
+				->max()=getValue(max,signal).val
+		) 
+	and
+		(subtrace ->  
+			forAll(elem1, elem2 | 
+				(firstTimeInInterval<= elem1.generationTime and elem1.generationTime < elem2.generationTime 
+				and elem2.generationTime <=  max.generationTime and max.generationTime<=lastTimeInInterval) 
+				implies 
+				getValue(elem1,signal).val < getValue(elem2,signal).val 
+			)
+		) 
+	and 
+		(subtrace ->  
+			forAll(elem1, elem2 | 
+				(firstTimeInInterval<=max.generationTime and max.generationTime <= elem1.generationTime  
+					and elem1.generationTime < elem2.generationTime and elem2.generationTime <= lastTimeInInterval) 
+				implies 
+				getValue(elem1,signal).val > getValue(elem2,signal).val 
+			)
+		) 	
+	
+---------  Is strict minimum  ---------
+def: isLocalMinimum(subtrace:OrderedSet(trace::TraceElement), min:trace::TraceElement, firstTimeInInterval:Real, lastTimeInInterval:Real, signal:sBTemPsy::Signal):Boolean = 
+		subtrace -> exists(elem | elem.generationTime=min.generationTime and getValue(elem,signal)=getValue(min,signal))
+	and
+		subtrace->select(elem | 
+			elem.generationTime >= firstTimeInInterval and elem.generationTime <= lastTimeInInterval 
+			).signalValue
+			-> select(elem |elem.key.id=signal.id).value.val
+			->min()=getValue(min,signal).val
+	and 
+		(subtrace ->
+			forAll(elem1, elem2 | 
+				(firstTimeInInterval<= elem1.generationTime and elem1.generationTime < elem2.generationTime and elem2.generationTime <= min.generationTime and min.generationTime<=lastTimeInInterval ) 
+				implies 
+				getValue(elem1, signal).val > getValue(elem2, signal).val 
+			)
+		) 
+	and 
+		(subtrace ->  
+			forAll(elem1, elem2 |  
+				(firstTimeInInterval<=min.generationTime and min.generationTime <= elem1.generationTime and elem1.generationTime < elem2.generationTime and elem2.generationTime <= lastTimeInInterval) 
+				implies 
+				getValue(elem1, signal).val < getValue(elem2, signal).val
+		)	
+	) 		
+
+
+---------  Is strict maximum  ---------
+def: isMaximum(subtrace:OrderedSet(trace::TraceElement), max:trace::TraceElement, firstTimeInInterval:Real, lastTimeInInterval:Real, signal:sBTemPsy::Signal):Boolean = 
+		subtrace -> exists(elem | elem.generationTime=max.generationTime and getValue(elem,signal)=getValue(max,signal))
+	and
+		(subtrace->
+			select(elem | 
+				elem.generationTime >= firstTimeInInterval and elem.generationTime <= lastTimeInInterval).signalValue
+				-> select(elem |elem.key.id=signal.id).value.val
+				->max()=getValue(max,signal).val) 
+	and
+		(subtrace ->  forAll(elem1, elem2 | 
+				(firstTimeInInterval<= elem1.generationTime and elem1.generationTime <= elem2.generationTime 
+					and elem2.generationTime <=  max.generationTime and max.generationTime<=lastTimeInInterval) 
+			implies 
+				getValue(elem1,signal).val <= getValue(elem2,signal).val
+			)
+		) 
+	and 
+		(subtrace ->  forAll(elem1, elem2 | 
+				(firstTimeInInterval<=max.generationTime and max.generationTime <= elem1.generationTime  and 
+				elem1.generationTime <= elem2.generationTime and elem2.generationTime <= lastTimeInInterval) 
+			implies 
+				getValue(elem1,signal).val >= getValue(elem2,signal).val 
+			)
+		) 	
+	
+	
+------ ******************------
+------ PATTERNS
+------ ******************------	
+
+
+
+---------  Check Predicate  ---------
+def: checkPredicate(trace:OrderedSet(trace::TraceElement), element:trace::TraceElement, assertion:sBTemPsy::Assertion): Boolean =  
+
+(	   
+		(assertion.dAPred.rOp = sBTemPsy::RelationalOperator::EQL and getValue(element, assertion.signal).val = assertion.dAPred.value.val) 		or
+		(assertion.dAPred.rOp = sBTemPsy::RelationalOperator::LESS and getValue(element, assertion.signal).val < assertion.dAPred.value.val)  		or
+		(assertion.dAPred.rOp = sBTemPsy::RelationalOperator::LESSEQ and getValue(element, assertion.signal).val <= assertion.dAPred.value.val) 	or
+		(assertion.dAPred.rOp = sBTemPsy::RelationalOperator::GRT and getValue(element, assertion.signal).val > assertion.dAPred.value.val) 		or 
+		(assertion.dAPred.rOp = sBTemPsy::RelationalOperator::GRTEQ and getValue(element, assertion.signal).val >= assertion.dAPred.value.val) 	or
+		(assertion.dAPred.rOp = sBTemPsy::RelationalOperator::DIFF and getValue(element, assertion.signal).val  <> assertion.dAPred.value.val)
+)
+
+
+def: checkStatePredicate(trace:OrderedSet(trace::TraceElement), element:trace::TraceElement, statePat:sBTemPsy::StateAssertion): Boolean = 
+(		(statePat.dAPred.rOp = sBTemPsy::RelationalOperator::EQL and getValue(element,statePat.signal).val = statePat.dAPred.value.val) 		or
+		(statePat.dAPred.rOp = sBTemPsy::RelationalOperator::LESS and getValue(element,statePat.signal).val < statePat.dAPred.value.val)  		or
+		(statePat.dAPred.rOp = sBTemPsy::RelationalOperator::LESSEQ and getValue(element,statePat.signal).val <= statePat.dAPred.value.val) 	or
+		(statePat.dAPred.rOp = sBTemPsy::RelationalOperator::GRT and getValue(element,statePat.signal).val > statePat.dAPred.value.val) 		or 
+		(statePat.dAPred.rOp = sBTemPsy::RelationalOperator::GRTEQ and getValue(element,statePat.signal).val  >= statePat.dAPred.value.val) 	or
+		(statePat.dAPred.rOp = sBTemPsy::RelationalOperator::DIFF and getValue(element,statePat.signal).val  <> statePat.dAPred.value.val)
+)
+
+
+------------ Recursion over Assertions -----------
+
+def: checkCondition(trace:OrderedSet(trace::TraceElement), t:trace::TraceElement, daCondition:sBTemPsy::AbstractCondition): Boolean= 
+		if daCondition.oclIsTypeOf(sBTemPsy::OrCondition) then  
+			let orAssertion:sBTemPsy::OrCondition = daCondition.oclAsType(sBTemPsy::OrCondition), 
+				orDaCondOne:sBTemPsy::AbstractCondition = orAssertion.condition1,
+				orDaCondTwo:sBTemPsy::AbstractCondition = orAssertion.condition2
+			in
+				--checking on sub-conditions
+				(	checkCondition(trace, t, orDaCondOne) or
+					checkCondition(trace, t, orDaCondTwo)
+				)
+
+	else
+			if daCondition.oclIsTypeOf(sBTemPsy::AndCondition) then  
+				let andAssertion:sBTemPsy::AndCondition=daCondition.oclAsType(sBTemPsy::AndCondition), 
+					andDaCondOne:sBTemPsy::AbstractCondition= andAssertion.condition1,
+					andDaCondTwo:sBTemPsy::AbstractCondition= andAssertion.condition2
+				in
+						--checking on sub-conditions
+				
+				(	checkCondition(trace, t, andDaCondOne) and
+					checkCondition(trace, t, andDaCondTwo)
+				)	
+				
+		
+			else 
+				-- if daCondition.oclIsTypeOf(sBTemPsy::Assertion) then
+					-- assertion case
+					let assertion:sBTemPsy::Assertion=daCondition.oclAsType(sBTemPsy::Assertion) in
+					checkPredicate(trace, t, assertion)
+					
+					
+			endif
+		endif						 
+
+---------  Data Assertion  ---------
+def: checkPatternDataAssertion(trace:OrderedSet(trace::TraceElement), pattern:sBTemPsy::Pattern, tl:Real,tu:Real):Boolean = 
+if trace->isEmpty() then true -- if no records in the trace
+else
+	 	let dataassertion:sBTemPsy::DataAssertion=pattern.oclAsType(sBTemPsy::DataAssertion) in				
+		
+		if dataassertion.oclIsTypeOf(sBTemPsy::EventAssertion) then 
+		( 	-- regular assertion 
+			let eventAssertion:sBTemPsy::EventAssertion = dataassertion.oclAsType(sBTemPsy::EventAssertion) in
+			
+			-- paper encoding
+			trace->forAll(t:trace::TraceElement | 
+						(t.generationTime >= tl and t.generationTime <=tu) 
+						implies 
+						(checkCondition(trace, t, eventAssertion.condition))															     
+						)
+		)							
+		else  --becomes
+		 if dataassertion.oclIsTypeOf(sBTemPsy::StateAssertion) then 
+		let assertion:sBTemPsy::StateAssertion= pattern.oclAsType(sBTemPsy::StateAssertion) in 
+		
+		trace->exists(t | 
+					(t.generationTime > tl and t.generationTime <= tu
+												and	checkStatePredicate(trace,t,assertion)
+					) 
+		 			and
+					( trace->forAll(c | 
+							(c.generationTime >= tl and  c.generationTime < t.generationTime) 
+							implies 						
+								checkStatePredicate(trace, c, assertion) =false	
+									)
+					) 
+				)
+		
+		
+		else false 
+	endif	
+	endif	
+
+endif
+
+---------  Spike Features  ---------	
+def: spikeAmplitude(value1:Real,value2:Real,value3:Real,
+	spikeFeaturesList:OrderedSet(sBTemPsy::SpikeFeature),indAmp:Integer):Boolean= 
+	 (	spikeFeaturesList.spkFName->includes(sBTemPsy::SpikeFeatureName::a) 
+		 implies
+		 (	
+		 	( spikeFeaturesList->at(indAmp).sFPred.rOp = sBTemPsy::RelationalOperator::EQL and (value2-value1).abs().max((value2-value3).abs()) = spikeFeaturesList->at(indAmp).sFPred.value.val ) 
+			or 
+			( spikeFeaturesList->at(indAmp).sFPred.rOp = sBTemPsy::RelationalOperator::GRT and (value2-value1).abs().max((value2-value3).abs()) > spikeFeaturesList->at(indAmp).sFPred.value.val) 
+			or 
+			( spikeFeaturesList->at(indAmp).sFPred.rOp = sBTemPsy::RelationalOperator::LESS and (value2-value1).abs().max((value2-value3).abs()) < spikeFeaturesList->at(indAmp).sFPred.value.val) 
+			or 
+			( spikeFeaturesList->at(indAmp).sFPred.rOp = sBTemPsy::RelationalOperator::GRTEQ and (value2-value1).abs().max((value2-value3).abs()) >= spikeFeaturesList->at(indAmp).sFPred.value.val) 
+			or 
+			(spikeFeaturesList->at(indAmp).sFPred.rOp = sBTemPsy::RelationalOperator::LESSEQ and (value2-value1).abs().max((value2-value3).abs()) <= spikeFeaturesList->at(indAmp).sFPred.value.val) 
+			or 
+			(spikeFeaturesList->at(indAmp).sFPred.rOp = sBTemPsy::RelationalOperator::DIFF and (value2-value1).abs().max((value2-value3).abs()) <> spikeFeaturesList->at(indAmp).sFPred.value.val)
+		)
+	)
+	
+-- Define spike width note that t2 > t1 -- 
+def: spikeWidth(t1:Real,t2:Real,spikeFeaturesList:OrderedSet(sBTemPsy::SpikeFeature),indDur:Integer): Boolean= 
+	(		spikeFeaturesList.spkFName->includes(sBTemPsy::SpikeFeatureName::w) 
+		implies
+		(
+			(spikeFeaturesList->at(indDur).sFPred.rOp = sBTemPsy::RelationalOperator::EQL and t2-t1 = spikeFeaturesList->at(indDur).sFPred.value.val) 
+			or 
+			(spikeFeaturesList->at(indDur).sFPred.rOp = sBTemPsy::RelationalOperator::GRT and t2-t1  > spikeFeaturesList->at(indDur).sFPred.value.val) 
+			or 
+			(spikeFeaturesList->at(indDur).sFPred.rOp = sBTemPsy::RelationalOperator::LESS and t2-t1  < spikeFeaturesList->at(indDur).sFPred.value.val) 
+			or 
+			(spikeFeaturesList->at(indDur).sFPred.rOp = sBTemPsy::RelationalOperator::GRTEQ and t2-t1  >= spikeFeaturesList->at(indDur).sFPred.value.val) 
+			or 
+			(spikeFeaturesList->at(indDur).sFPred.rOp = sBTemPsy::RelationalOperator::LESSEQ and t2-t1  <= spikeFeaturesList->at(indDur).sFPred.value.val) 
+			or 
+			(spikeFeaturesList->at(indDur).sFPred.rOp = sBTemPsy::RelationalOperator::DIFF and t2-t1  <> spikeFeaturesList->at(indDur).sFPred.value.val)
+		)
+	)
+												
+---------  Spike  ---------	
+def: checkPatternSpike(subtrace:OrderedSet(trace::TraceElement), pattern:sBTemPsy::Pattern,tl:Real,tu:Real):Boolean = 
+if subtrace->isEmpty() then true -- if no records in the trace
+else
+
+	let 
+	spkPattern:sBTemPsy::Spike=pattern.oclAsType(sBTemPsy::Spike),
+--	mainFeatures:sBTemPsy::SpikeFeature=pattern.oclAsType(sBTemPsy::SpikeFeature),
+	spkOcc:Integer=spkPattern.occSpk,  --fixed
+	signal:sBTemPsy::Signal = spkPattern.signal, --signal name in the spike property
+	spikeFeaturesList:OrderedSet(sBTemPsy::SpikeFeature)=spkPattern.spkFeat, -- --, --{'a','w','sp1','sp2'} e.g.,{'a'->name,pred,'w'->name,pred} ; {a: name,pred}
+	indAmp:Integer=spikeFeaturesList.spkFName->indexOf(sBTemPsy::SpikeFeatureName::a),
+	indDur:Integer=spikeFeaturesList.spkFName->indexOf(sBTemPsy::SpikeFeatureName::w),
+	indSp1:Integer=spikeFeaturesList.spkFName->indexOf(sBTemPsy::SpikeFeatureName::sp1),
+	indSp2:Integer=spikeFeaturesList.spkFName->indexOf(sBTemPsy::SpikeFeatureName::sp2)
+	in				
+	 	 subtrace->exists(t1|
+		 		subtrace->exists(t2,t3| 
+		 			t1.generationTime < t2.generationTime and t2.generationTime < t3.generationTime and 
+					(
+						(	isMinimum(subtrace, t1, tl, t2.generationTime, signal) 	-- consider the first local minimum (t1)
+		 					and isLocalMaximum(subtrace, t2, t1.generationTime, t3.generationTime, signal)	-- consider the first local maximum  (t2)
+		 					and isMinimum(subtrace, t3, t2.generationTime,tu,signal)	-- consider the second local minimum (t3)		
+						)
+						or -- consider the first local maximum (t1), local minimum (t2) and second local maximum (t3)
+						(	isMaximum(subtrace, t1, tl, t2.generationTime, signal) 	-- consider the first local minimum (t1)
+		 					and isLocalMinimum(subtrace, t2, t1.generationTime, t3.generationTime, signal)	-- consider the first local maximum  (t2)
+		 					and isMaximum(subtrace, t3, t2.generationTime,tu,signal)	-- consider the second local minimum (t3)		
+						)
+					) 
+					and				-- constraining over amplitude feature -- 
+						spikeAmplitude(getValue(t1,signal).val,getValue(t2,signal).val,getValue(t3,signal).val,spikeFeaturesList,indAmp)
+					and
+						spikeWidth(t1.generationTime,t3.generationTime,spikeFeaturesList,indDur)
+				)
+			)
+endif
+
+---------  Oscillations  ---------
+def: isOscillation(subtrace:OrderedSet(trace::TraceElement),t1:trace::TraceElement, t2:trace::TraceElement,t3:trace::TraceElement,t4:trace::TraceElement,t5:trace::TraceElement,signal:sBTemPsy::Signal):Boolean= 
+	(
+					( isLocalMaximum(subtrace, t2, t1.generationTime, t3.generationTime, signal) and	
+					 isLocalMinimum(subtrace, t3, t2.generationTime, t4.generationTime, signal) and
+					 isLocalMaximum(subtrace, t4, t3.generationTime, t5.generationTime, signal) 
+					)	
+					or
+				--max-min-max-min
+					( isLocalMinimum(subtrace, t2, t1.generationTime, t3.generationTime, signal) and				
+			      		isLocalMaximum(subtrace, t3, t2.generationTime, t4.generationTime, signal)  and
+					 isLocalMinimum(subtrace, t4, t3.generationTime, t5.generationTime, signal) 
+			  		)	
+	 ) 	
+
+--
+def: peakToPeakAmp(subtrace:OrderedSet(trace::TraceElement),  signal:sBTemPsy::Signal,oscFeaturesList:OrderedSet(sBTemPsy::OscillationsFeature),indAmp:Integer):Boolean=
+		
+	subtrace->forAll(t1,t2 : trace::TraceElement | 
+				subtrace->forAll(t3,t4 : trace::TraceElement| 
+						subtrace->forAll(t5 : trace::TraceElement |  
+--						
+(
+	  t1.generationTime < t2.generationTime and  t2.generationTime < t3.generationTime 
+	 and t3.generationTime < t4.generationTime and t4.generationTime< t5.generationTime   
+	 and isOscillation(subtrace,t1,t2,t3,t4,t5,signal)
+									) implies 
+							
+							(
+				oscFeaturesList.oscFName->includes(sBTemPsy::OscillationsFeatureName::a) implies				 					
+					(			
+								(oscFeaturesList->at(indAmp).oscFPred.rOp = sBTemPsy::RelationalOperator::LESS and
+												(getValue(t3,signal).val-getValue(t2,signal).val).abs()<oscFeaturesList->at(indAmp).oscFPred.value.val and
+												 (getValue(t4,signal).val-getValue(t3,signal).val).abs()<oscFeaturesList->at(indAmp).oscFPred.value.val	
+								)  or
+								(oscFeaturesList->at(indAmp).oscFPred.rOp = sBTemPsy::RelationalOperator::EQL and
+												 (getValue(t3,signal).val-getValue(t2,signal).val).abs()=oscFeaturesList->at(indAmp).oscFPred.value.val and
+												 (getValue(t4,signal).val-getValue(t3,signal).val).abs()=oscFeaturesList->at(indAmp).oscFPred.value.val					 
+								) or 
+								(oscFeaturesList->at(indAmp).oscFPred.rOp = sBTemPsy::RelationalOperator::GRT and
+												(getValue(t3,signal).val-getValue(t2,signal).val).abs()>oscFeaturesList->at(indAmp).oscFPred.value.val and
+												 (getValue(t4,signal).val-getValue(t3,signal).val).abs()>oscFeaturesList->at(indAmp).oscFPred.value.val	
+								) or
+								(oscFeaturesList->at(indAmp).oscFPred.rOp = sBTemPsy::RelationalOperator::GRTEQ and
+												(getValue(t3,signal).val-getValue(t2,signal).val).abs()>=oscFeaturesList->at(indAmp).oscFPred.value.val and
+												 (getValue(t4,signal).val-getValue(t3,signal).val).abs()>=oscFeaturesList->at(indAmp).oscFPred.value.val	
+								) or 
+								(oscFeaturesList->at(indAmp).oscFPred.rOp = sBTemPsy::RelationalOperator::LESSEQ and
+									(getValue(t3,signal).val-getValue(t2,signal).val).abs()<=oscFeaturesList->at(indAmp).oscFPred.value.val and
+												 (getValue(t4,signal).val-getValue(t3,signal).val).abs()<=oscFeaturesList->at(indAmp).oscFPred.value.val	
+								) or
+								(oscFeaturesList->at(indAmp).oscFPred.rOp = sBTemPsy::RelationalOperator::DIFF and
+									(getValue(t3,signal).val-getValue(t2,signal).val).abs() <> oscFeaturesList->at(indAmp).oscFPred.value.val and
+												 (getValue(t4,signal).val-getValue(t3,signal).val).abs()<>oscFeaturesList->at(indAmp).oscFPred.value.val	
+								)	
+						)			
+						)
+						
+							
+					)		
+				)
+			)
+	
+				
+def: period(subtrace:OrderedSet(trace::TraceElement), signal:sBTemPsy::Signal,oscFeaturesList:OrderedSet(sBTemPsy::OscillationsFeature),indP:Integer):Boolean=
+			
+	subtrace->forAll(t1,t2 : trace::TraceElement | 
+				subtrace->forAll(t3,t4 : trace::TraceElement| 
+						subtrace->forAll(t5 : trace::TraceElement |  
+--						
+(
+	  t1.generationTime < t2.generationTime and  t2.generationTime < t3.generationTime 
+	 and t3.generationTime < t4.generationTime and t4.generationTime< t5.generationTime   
+	 and isOscillation(subtrace,t1,t2,t3,t4,t5,signal)
+									) implies 
+							
+							(
+				oscFeaturesList.oscFName->includes(sBTemPsy::OscillationsFeatureName::w) implies				 					
+					(			
+								(oscFeaturesList->at(indP).oscFPred.rOp = sBTemPsy::RelationalOperator::LESS and
+												t4.generationTime-t2.generationTime<oscFeaturesList->at(indP).oscFPred.value.val --and 
+												
+								)  or
+								(oscFeaturesList->at(indP).oscFPred.rOp = sBTemPsy::RelationalOperator::EQL and
+												(t2.generationTime-t4.generationTime).abs()=oscFeaturesList->at(indP).oscFPred.value.val				 
+								) or 
+								(oscFeaturesList->at(indP).oscFPred.rOp = sBTemPsy::RelationalOperator::GRT and
+												(t2.generationTime-t4.generationTime).abs()>oscFeaturesList->at(indP).oscFPred.value.val	
+								) or
+								(oscFeaturesList->at(indP).oscFPred.rOp = sBTemPsy::RelationalOperator::GRTEQ and
+												(t2.generationTime-t4.generationTime).abs()>=oscFeaturesList->at(indP).oscFPred.value.val	
+								) or 
+								(oscFeaturesList->at(indP).oscFPred.rOp = sBTemPsy::RelationalOperator::LESSEQ and
+									(t2.generationTime-t4.generationTime).abs()<=oscFeaturesList->at(indP).oscFPred.value.val	
+								) or
+								(oscFeaturesList->at(indP).oscFPred.rOp = sBTemPsy::RelationalOperator::DIFF and
+									(t2.generationTime-t4.generationTime).abs() <> oscFeaturesList->at(indP).oscFPred.value.val
+								)	
+						)			
+						)
+						
+							
+					)		
+				)
+			)
+	
+					
+
+def: checkPatternOscillations(subtrace:OrderedSet(trace::TraceElement), pattern:sBTemPsy::Pattern,tl:Real,tu:Real):Boolean = 
+if subtrace->isEmpty() then true -- if no records in the trace
+else
+	let 
+	oscPattern:sBTemPsy::Oscillation=pattern.oclAsType(sBTemPsy::Oscillation),
+	signal:sBTemPsy::Signal = oscPattern.signal, --signal name in the oscillations-based property
+	oscFeaturesList:OrderedSet(sBTemPsy::OscillationsFeature)=oscPattern.oscFeat, 
+	indAmp:Integer=oscFeaturesList.oscFName->indexOf(sBTemPsy::OscillationsFeatureName::a),
+	indP:Integer=oscFeaturesList.oscFName->indexOf(sBTemPsy::OscillationsFeatureName::w)--,
+	--indExt:Integer=oscFeaturesList.oscFName->indexOf(sBTemPsy::OscillationsFeatureName::extremaP)
+	in
+		subtrace->exists(t1,t2| 
+			subtrace->exists(t3,t4| 
+				 subtrace->exists(t5 | 
+					tl<= t1.generationTime and t1.generationTime < t2.generationTime and t2.generationTime< t3.generationTime and t3.generationTime < t4.generationTime
+				 	and t4.generationTime< t5.generationTime and t5.generationTime <=tu
+					and isOscillation(subtrace,t1,t2,t3,t4,t5,signal)
+				)
+			)
+		)
+		and peakToPeakAmp(subtrace, signal,oscFeaturesList,indAmp) 
+		and period(subtrace,signal,oscFeaturesList,indP) 			
+					
+endif
+
+
+---------  Rise time pattern  ---------
+def: checkPatternRiseTime(subtrace:OrderedSet(trace::TraceElement), pattern:sBTemPsy::Pattern,tl:Real,tu:Real):Boolean = 
+	let 
+		rtPattern:sBTemPsy::Rise=pattern.oclAsType(sBTemPsy::Rise),
+		signal:sBTemPsy::Signal = rtPattern.signal,
+		--behavior:sBTemPsy::PatternType=rtPattern.rfBehavior, 
+		targetVal:Real=rtPattern.targetValue.val 
+	in
+	
+ 
+	subtrace->exists(t | 
+		(tl<t.generationTime  and t.generationTime <= tu and getValue(t,signal).val >= targetVal) 
+		and
+		( subtrace->forAll(c | (
+			tl <= c.generationTime  and c.generationTime < t.generationTime) 
+					implies 
+					(getValue(c,signal).val < targetVal) ) )
+			--	monotonicity constraint (if required)
+		and (rtPattern.rfMonotonicity = sBTemPsy::MonotonicityType::MONOTONICITY implies 
+					(subtrace->forAll(d1,d2| (
+									 tl <= d1.generationTime   and d1.generationTime < d2.generationTime   and d2.generationTime <= t.generationTime) 
+									 implies
+									 getValue(d2,signal).val > getValue(d1,signal).val
+									 )
+					)
+			)	
+		--	Non monotonicity constraint (if required)
+		and (rtPattern.rfMonotonicity = sBTemPsy::MonotonicityType::NOMONOTONICITY implies 
+					(subtrace->exists(d1,d2| (
+									 tl <= d1.generationTime   and d1.generationTime < d2.generationTime   and d2.generationTime <= t.generationTime) 
+									 and
+									 getValue(d2,signal).val <= getValue(d1,signal).val
+									 )
+					)
+			)		
+	) 
+		
+---------  Fall time pattern  ---------
+def: checkPatternFallTime(subtrace:OrderedSet(trace::TraceElement), pattern:sBTemPsy::Pattern, tl:Real,tu:Real):Boolean = 
+	let 
+	ftPattern:sBTemPsy::Fall=pattern.oclAsType(sBTemPsy::Fall),
+	signal:sBTemPsy::Signal = ftPattern.signal,
+	--behavior:sBTemPsy::PatternType=ftPattern.rfBehavior, 
+	targetVal:Real=ftPattern.targetValue.val
+	in
+		  
+	subtrace->exists(t | 
+		(tl < t.generationTime and t.generationTime <= tu and  getValue(t,signal).val <= targetVal) 
+	and
+		( subtrace->forAll(c | 
+			(c.generationTime >= tl and c.generationTime < t.generationTime) 
+													implies 
+													(getValue(c,signal).val > targetVal) ) )
+		--	monotonicity constraint (if required)
+	and (ftPattern.rfMonotonicity = sBTemPsy::MonotonicityType::MONOTONICITY implies 
+			(subtrace->forAll(d1,d2| ( 
+							 d1.generationTime >= tl and 
+							 d1.generationTime < t.generationTime and 
+							 d2.generationTime > d1.generationTime and d2.generationTime <t.generationTime) implies
+							 getValue(d1,signal).val > getValue(d2,signal).val
+				 )
+			)
+		)
+		--	NOT monotonicity constraint (if required)
+	and (ftPattern.rfMonotonicity = sBTemPsy::MonotonicityType::NOMONOTONICITY implies 
+			(subtrace->exists(d1,d2| (
+							 d1.generationTime >= tl and 
+							 d1.generationTime < t.generationTime and 
+							 d2.generationTime > d1.generationTime and d2.generationTime <t.generationTime) and
+							 getValue(d2,signal).val > getValue(d1,signal).val
+				 )
+			)
+		)
+	) 
+	
+------ Overshoot pattern ------
+def: checkPatternOvershoot(subtrace:OrderedSet(trace::TraceElement), pattern:sBTemPsy::Pattern,tl:Real,tu:Real):Boolean = 
+	let 
+		oshPattern:sBTemPsy::Overshoot=pattern.oclAsType(sBTemPsy::Overshoot),
+		signal:sBTemPsy::Signal = oshPattern.signal,
+		--behavior:sBTemPsy::PatternType=oshPattern.ouBehavior, 
+		targetVal:Real=oshPattern.targetValue.val,
+		maxVal:Real=oshPattern.maximumValue.val
+	in
+	subtrace->exists(t | 
+		(tl < t.generationTime and t.generationTime < tu  and getValue(t,signal).val >= targetVal) 
+		and
+		( subtrace->forAll(c | 
+				(t.generationTime < c.generationTime and c.generationTime <= tu ) 
+				implies  
+				(getValue(c,signal).val <= targetVal+maxVal) 
+			) 
+		) 
+		--	monotonicity constraint (if required)
+		and 
+		(		oshPattern.ouMonotonicity = sBTemPsy::MonotonicityType::MONOTONICITY 
+			implies 
+				(subtrace->forAll(d1,d2| 
+					(	
+						tl <= d1.generationTime  and d1.generationTime < d2.generationTime  and d2.generationTime <t.generationTime) 
+						implies
+						 getValue(d1,signal).val < getValue(d2,signal).val
+					 )
+				)
+		)
+		--	NO monotonicity constraint (if required)
+		and 
+		(		oshPattern.ouMonotonicity = sBTemPsy::MonotonicityType::NOMONOTONICITY 
+			implies 
+				(subtrace->exists(d1,d2| 
+					(	
+						tl <= d1.generationTime  and d1.generationTime < d2.generationTime  and d2.generationTime <t.generationTime) 
+						and
+						 getValue(d1,signal).val >= getValue(d2,signal).val
+					 )
+				)
+		)
+	) 
+		
+------ Undershoot pattern ------
+def: checkPatternUndershoot(subtrace:OrderedSet(trace::TraceElement), pattern:sBTemPsy::Pattern,tl:Real,tu:Real):Boolean = 
+	let 
+		ushPattern:sBTemPsy::Undershoot=pattern.oclAsType(sBTemPsy::Undershoot),
+		signal:sBTemPsy::Signal =  ushPattern.signal,
+		--behavior:sBTemPsy::PatternType=ushPattern.ouBehavior, 
+		targetVal:Real=ushPattern.targetValue.val,
+		maxVal:Real=ushPattern.maximumValue.val
+	in
+	subtrace->exists(t | 
+			(tl < t.generationTime  and t.generationTime < tu
+				and getValue(t,signal).val <= targetVal) 
+		and
+		( subtrace->forAll(c | 
+				(t.generationTime < c.generationTime  and 
+							  c.generationTime <= tu ) 
+				implies
+				(getValue(c,signal).val >= (targetVal-maxVal).abs()) 
+			) 
+		) 	
+		--	monotonicity constraint (if required)
+		and 
+		(		ushPattern.ouMonotonicity = sBTemPsy::MonotonicityType::MONOTONICITY 
+			implies 
+				(subtrace->forAll(d1,d2| (
+								 tl <= d1.generationTime   and 
+								 d1.generationTime < d2.generationTime and d2.generationTime <t.generationTime) implies
+								 getValue(d1,signal).val > getValue(d2,signal).val
+							)
+				)
+		)
+		--	NO monotonicity constraint (if required)
+		and 
+		(		ushPattern.ouMonotonicity = sBTemPsy::MonotonicityType::NOMONOTONICITY 
+			implies 
+				(subtrace->exists(d1,d2| (
+								 tl <= d1.generationTime   and 
+								 d1.generationTime < d2.generationTime and d2.generationTime <t.generationTime) and
+								 getValue(d1,signal).val < getValue(d2,signal).val
+							)
+				)
+		)
+	) 
+			
+
+def: checkSinglePattern(trace:OrderedSet(trace::TraceElement), pattern:sBTemPsy::Pattern, firsttime:Real, lasttime:Real): Boolean=
+	(pattern.oclIsTypeOf(sBTemPsy::StateAssertion) and checkPatternDataAssertion(trace, pattern,firsttime,lasttime)) or
+	(pattern.oclIsTypeOf(sBTemPsy::EventAssertion) and checkPatternDataAssertion(trace, pattern,firsttime,lasttime)) or	
+	(pattern.oclIsTypeOf(sBTemPsy::Spike) and checkPatternSpike(trace, pattern,firsttime,lasttime)) or
+	(pattern.oclIsTypeOf(sBTemPsy::Oscillation) and checkPatternOscillations(trace, pattern,firsttime,lasttime)) or
+	(pattern.oclIsTypeOf(sBTemPsy::Rise) and checkPatternRiseTime(trace, pattern,firsttime,lasttime)) or
+	(pattern.oclIsTypeOf(sBTemPsy::Fall) and checkPatternFallTime(trace, pattern,firsttime,lasttime)) or
+	(pattern.oclIsTypeOf(sBTemPsy::Overshoot) and checkPatternOvershoot(trace, pattern,firsttime,lasttime)) or
+	(pattern.oclIsTypeOf(sBTemPsy::Undershoot) and checkPatternUndershoot(trace, pattern,firsttime,lasttime))  
+
+------ Order relationship between signals pattern ------
+def: checkPatternOrderRelationshipship(trace:OrderedSet(trace::TraceElement), pattern:sBTemPsy::Pattern,tl:Real,tu:Real): Boolean = 
+	let 
+	orderPattern:sBTemPsy::Order=pattern.oclAsType(sBTemPsy::Order),
+	causePattern:sBTemPsy::Pattern=orderPattern.cause,
+	causeEffectDistance:sBTemPsy::TimeDistance=orderPattern.causeEffectDistance,
+	causeEffectDistanceCompOp:sBTemPsy::ComparingOperator=orderPattern.causeEffectDistance.comparingOperator,
+	causeEffectDistanceBoundary:Real=orderPattern.causeEffectDistance.boundary.val,
+	effectPatternsList:OrderedSet(sBTemPsy::Pattern)=orderPattern.effect.effectsPList
+	in
+	trace->exists(tcl,tcu| 
+		(tl <= tcl.generationTime  and tcl.generationTime <=tcu.generationTime and tcu.generationTime<tu 
+			and 
+			checkSinglePattern(trace,causePattern,tcl.generationTime,tcu.generationTime) 
+		)
+		and
+		(
+			effectPatternsList->forAll(p|
+			trace->exists(tel,teu| 
+				tcu.generationTime< tel.generationTime and tel.generationTime<= teu.generationTime and teu.generationTime<tu
+					and checkSinglePattern(trace,p,tel.generationTime,teu.generationTime) 
+					and
+					(causeEffectDistance <>null implies (	
+							( causeEffectDistanceCompOp  = sBTemPsy::ComparingOperator::ATMOST and  tel.generationTime-tcu.generationTime <= causeEffectDistanceBoundary) or
+							( causeEffectDistanceCompOp  = sBTemPsy::ComparingOperator::ATLEAST and  tel.generationTime-tcu.generationTime >= causeEffectDistanceBoundary) or
+							( causeEffectDistanceCompOp  = sBTemPsy::ComparingOperator::EXACTLY and  tel.generationTime-tcu.generationTime = causeEffectDistanceBoundary) 
+						)
+					)
+				)
+			)
+		)
+	)
+	
+def: checkPattern(trace:OrderedSet(trace::TraceElement), pattern:sBTemPsy::Pattern, firsttime:Real, lasttime:Real): Boolean=
+	if pattern.oclIsTypeOf(sBTemPsy::Order) then
+		checkPatternOrderRelationshipship(trace, pattern,firsttime,lasttime)
+	else
+		checkSinglePattern(trace, pattern,firsttime,lasttime)
+	endif
+
+------ ******************------
+------ SCOPES
+------ ******************------	
+def: globally(trace:OrderedSet(trace::TraceElement), property:sBTemPsy::Property): Boolean=
+	let tl:Real=trace->first().generationTime, tu:Real=trace->last().generationTime in 
+	checkPattern(trace, property.pattern, tl, tu)
+	
+	
+def: before(trace:OrderedSet(trace::TraceElement), property:sBTemPsy::Property): Boolean=
+	let tl:Real=trace->first().generationTime, tu:Real=trace->last().generationTime, 
+		beforeScope:sBTemPsy::Before=property.scope.oclAsType(sBTemPsy::Before) in 
+	
+	(beforeScope.boundary.absoluteB <> null and 
+		tl <= beforeScope.boundary.absoluteB.val and beforeScope.boundary.absoluteB.val <= tu and
+		checkPattern(trace, property.pattern, tl, beforeScope.boundary.absoluteB.val)
+	)
+	or
+	(beforeScope.boundary.eventB <> null and 
+ 		(
+ 			trace -> forAll(t1,t2|	
+ 				(tl < t1.generationTime  and t1.generationTime < t2.generationTime and 
+ 							t2.generationTime <= tu and
+							checkPattern(trace, property.scope.scopeBound.eventB, t1.generationTime, t2.generationTime) 
+				) 
+				implies 
+				(	trace -> exists(t3,t4| (tl <=t3.generationTime and t3.generationTime < t4.generationTime and t4.generationTime <=t1.generationTime and 	
+							checkPattern(trace, property.pattern, t3.generationTime, t4.generationTime))
+					)	
+				)
+			)	
+ 		)
+	)	
+
+def: at(trace:OrderedSet(trace::TraceElement), property:sBTemPsy::Property):Boolean=
+	(	let punctualScope:sBTemPsy::PunctualScope=property.scope.oclAsType(sBTemPsy::PunctualScope), 
+			tl:Real=trace->first().generationTime, tu:Real=trace->last().generationTime in 
+		
+		tl <= punctualScope.absolute.absoluteB.val and punctualScope.absolute.absoluteB.val <= tu and
+							checkPattern(trace, property.pattern, punctualScope.absolute.absoluteB.val,punctualScope.absolute.absoluteB.val)
+	)
+
+	
+		
+def: after(trace:OrderedSet(trace::TraceElement), property:sBTemPsy::Property):Boolean=
+	let tl:Real=trace->first().generationTime, tu:Real=trace->last().generationTime, 
+	 	afterScope:sBTemPsy::After=property.scope.oclAsType(sBTemPsy::After) in 
+	(	afterScope.boundary.absoluteB <> null and 
+			(
+				tl <= afterScope.boundary.absoluteB.val and afterScope.boundary.absoluteB.val <= tu and
+				checkPattern(trace, property.pattern, afterScope.boundary.absoluteB.val,tu)												
+			)
+	) 
+	or		
+	(	afterScope.boundary.eventB <> null implies 
+ 		(
+ 			trace -> forAll(t1,t2|	
+ 				( tl <= t1.generationTime and t1.generationTime < t2.generationTime and 
+							checkPattern(trace, property.scope.scopeBound.eventB, t1.generationTime, t2.generationTime) ) 
+				implies 
+				(	trace -> exists(t3,t4| 
+						( 	t2.generationTime <=t3.generationTime and 
+							t3.generationTime < t4.generationTime and t4.generationTime <=tu and 	
+							checkPattern(trace, property.pattern, t3.generationTime, t4.generationTime)
+						)
+					)	
+				)
+			)	
+ 		)
+	)
+					
+		
+def: betweenand(trace:OrderedSet(trace::TraceElement), property:sBTemPsy::Property):Boolean=
+ 	( 	let betweenAndScope:sBTemPsy::BetweenAnd=property.scope.oclAsType(sBTemPsy::BetweenAnd),  	
+ 			tl:Real=trace->first().generationTime, tu:Real=trace->last().generationTime in 
+				
+		(
+			betweenAndScope.boundary1.absoluteB <> null and betweenAndScope.boundary2.absoluteB <> null and 
+			tl <= betweenAndScope.boundary1.absoluteB.val and betweenAndScope.boundary1.absoluteB.val<= betweenAndScope.boundary2.absoluteB.val and betweenAndScope.boundary2.absoluteB.val <= tu and
+			checkPattern(trace, property.pattern, betweenAndScope.boundary1.absoluteB.val, betweenAndScope.boundary2.absoluteB.val)					 
+		) 
+		or
+		(
+			betweenAndScope.boundary1.eventB <> null and betweenAndScope.boundary2.eventB <> null and 
+			(  
+				trace -> forAll(t1,t2 |	 
+					trace ->forAll(t3,t4 |	 
+							(	tl <=t1.generationTime and t1.generationTime < t2.generationTime and t2.generationTime <=tu and
+								checkPattern(trace, betweenAndScope.boundary1.eventB, t1.generationTime, t2.generationTime) and 
+								t2.generationTime < t3.generationTime and t3.generationTime < t4.generationTime and t4.generationTime <=tu and
+								checkPattern(trace, betweenAndScope.boundary2.eventB, t3.generationTime, t4.generationTime)
+							) 
+						implies
+							checkPattern(trace, betweenAndScope.boundary2.eventB, t2.generationTime, t3.generationTime)
+					)
+				)
+			)
+		)			
+			
+	)
+	 
+
+------ ******************------
+------ MAIN
+------ ******************------	
+
+------------ Recursion over properties -----------
+def: checkSimpleProperty(trace:OrderedSet(trace::TraceElement), property:sBTemPsy::Property): Boolean= 
+
+	if property.scope=property.scope.oclAsType(sBTemPsy::Globally) then
+		 globally(trace,property)
+	else
+		if property.scope=property.scope.oclAsType(sBTemPsy::Before) then 
+			before(trace,property)
+		else
+			if property.scope=property.scope.oclAsType(sBTemPsy::After) then  
+				after(trace,property) 
+			else
+				if property.scope=property.scope.oclAsType(sBTemPsy::BetweenAnd) then
+				 	betweenand(trace,property)
+				else
+					if property.scope=property.scope.oclAsType(sBTemPsy::PunctualScope) then 
+					 	at(trace,property)
+					 else
+					 	false
+					 endif
+				endif
+			endif
+		endif
+	endif
+	
+
+def: checkProperty(trace:OrderedSet(trace::TraceElement), property:sBTemPsy::AbstractProperty): Boolean=
+( 
+	if trace->isEmpty() then true -- if no records in the trace
+	else
+	if property.oclIsTypeOf(sBTemPsy::OrProperty) then  
+			let orProperty:sBTemPsy::OrProperty = property.oclAsType(sBTemPsy::OrProperty), 
+				orProOne:sBTemPsy::AbstractProperty = orProperty.property1,
+				orProTwo:sBTemPsy::AbstractProperty = orProperty.property2
+			in
+			checkProperty(trace,orProOne) or 
+			checkProperty(trace, orProTwo)
+			
+		else
+			if property.oclIsTypeOf(sBTemPsy::AndProperty) then  
+				let andProperty:sBTemPsy::AndProperty = property.oclAsType(sBTemPsy::AndProperty), 
+				andProOne:sBTemPsy::AbstractProperty = andProperty.property1,
+				andProTwo:sBTemPsy::AbstractProperty = andProperty.property2
+			in
+			checkProperty(trace,andProOne) and 
+			checkProperty(trace, andProTwo)		 	
+			
+		else  
+				-- negation	
+				if property.oclIsTypeOf(sBTemPsy::NotProperty) then 
+					let negProp:sBTemPsy::NotProperty = property.oclAsType(sBTemPsy::NotProperty) in 
+						checkProperty(trace,negProp.property)=false					
+				else -- one simple property case
+		let simpleProperty:sBTemPsy::Property=property.oclAsType(sBTemPsy::Property) in
+			checkSimpleProperty(trace,simpleProperty)
+
+	endif
+	endif
+	endif
+	endif
+	
+)					 		
+			
+endpackage

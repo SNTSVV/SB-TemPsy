@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<sBTemPsy:PropertiesBlock
+    xmi:version="2.0"
+    xmlns:xmi="http://www.omg.org/XMI"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xmlns:sBTemPsy="http://www.svv.lu/offline/SBTemPsy"
+    xsi:schemaLocation="http://www.svv.lu/offline/SBTemPsy ../../models/sbtempsy.ecore">
+  <properties
+      xsi:type="sBTemPsy:Property"
+      name="p2">
+    <scope xsi:type="sBTemPsy:Globally"/>
+    <pattern
+        xsi:type="sBTemPsy:Undershoot"
+        ouMonotonicity="monotonically">
+      <signal
+          id="OBSW341Is"/>
+      <targetValue
+          val="5.0"/>
+      <maximumValue
+          val="2.0"/>
+    </pattern>
+  </properties>
+</sBTemPsy:PropertiesBlock>
